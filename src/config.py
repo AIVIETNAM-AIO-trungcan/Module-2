@@ -28,7 +28,7 @@ PREPROCESSORED_DIR = ARTIFACTS_DIR / "preprocessors"
 METRICS_DIR = ARTIFACTS_DIR / "metrics"
 
 # 4. Define specific paths for data files and serialized models
-RAW_DATA_FILE = RAW_DATA_DIR / "data_raw.csv"
+RAW_DATA_FILE = RAW_DATA_DIR / "credit_risk_dataset.csv"
 TRAIN_DATA_FILE = PROCESSED_DATA_DIR / "train.csv"
 VAL_DATA_FILE = PROCESSED_DATA_DIR / "val.csv"
 TEST_DATA_FILE = PROCESSED_DATA_DIR / "test.csv"
