@@ -1,0 +1,13 @@
+# Core Data Science Libraries
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Machine Learning
+scikit-learn>=1.2.0
+joblib>=1.3.0
+
+# Web Application UI
+streamlit>=1.25.0
+
+# Path Management & Utilities
+pathlib>=1.0.1
