@@ -51,3 +51,6 @@ artifacts/**/*.joblib
 
 # Block all generated evaluation metrics and reports
 artifacts/metrics/*
+
+# Block all generated WOE tables and mathematical CSV reports inside artifacts folder
+artifacts/**/*.csv
