@@ -6,6 +6,9 @@ numpy>=1.24.0
 scikit-learn>=1.2.0
 joblib>=1.3.0
 
+# Configuration & Utilities
+pyyaml>=6.0
+
 # Web Application UI
 streamlit>=1.25.0
 
