@@ -35,12 +35,7 @@ def load_raw_training_data() -> pd.DataFrame:
 
 
 def split_train_val_test(
-    df: pd.DataFrame,
-    target_column: str,
-    train_size: float = 0.64,
-    val_size: float = 0.16,
-    test_size: float = 0.2,
-    random_state: int = 42,
+    df: pd.DataFrame, target_column: str, split_params: dict
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits the training dataset into Train-train, Validation, and Test sets.
@@ -57,6 +52,12 @@ def split_train_val_test(
     Return:
         Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (df_train, df_val, df_test)
     """
+    test_size = split_params.get("test_size", 0.2)
+    val_size = split_params.get("val_size", 0.16)
+    random_state = split_params.get("random_state", 42)
+    should_stratify = split_params.get("stratify", True)
+    train_size = 1 - test_size - val_size
+
     # Quick sanity check on the ratios
     assert (
         abs((train_size + test_size + val_size) - 1.0) < 1e-9
@@ -67,7 +68,10 @@ def split_train_val_test(
 
     # 1. First Split: Isolate the Test set using stratiify on the target column
     df_train_val, def_test = train_test_split(
-        df, test_size=test_size, random_state=random_state, stratify=df[target_column]
+        df,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=df[target_column] if should_stratify else None,
     )  # Maintains class distribution in the Test set
 
     # 2. Second Split: Separate Train-train and Validation using stratify on target
@@ -75,7 +79,7 @@ def split_train_val_test(
         df_train_val,
         test_size=relative_val_size,
         random_state=random_state,
-        stratify=df_train_val[target_column],
+        stratify=df_train_val[target_column] if should_stratify else None,
     )  # Maintain class distribution in the Train/Val sets
 
     # Log information to verify the target distribution across all splits
@@ -95,8 +99,15 @@ if __name__ == "__main__":
         # ASSUMPTION: Replace 'target' in this project: 'loan_status'
         TARGET_COL = "loan_status"
 
+        MOCK_PARAMS = {
+            "test_size": 0.2,
+            "val_size": 0.16,
+            "random_state": 42,
+            "stratify": True,
+        }
+
         train_set, val_set, test_set = split_train_val_test(
-            raw_data, target_column=TARGET_COL
+            raw_data, target_column=TARGET_COL, split_params=MOCK_PARAMS
         )
     except Exception as e:
         print(f"[TEST FAILED] Stopped by: {type(e).__name__}")
