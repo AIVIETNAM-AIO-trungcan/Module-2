@@ -15,7 +15,7 @@ data:
 
   split_params:
     test_size: 0.2 # Percent of data saved for final testing (20%)
-    val_size: 0.2 # Percent of data saved for validation (20%)
+    val_size: 0.16 # Percent of data saved for validation (20%)
     random_state: 42 # Controls shuffling to ensure repeatable splits
     stratify: true # Keeps the balance of bad customers equal across splits
 
