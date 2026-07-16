@@ -100,7 +100,7 @@ class WOETransformer:
         self,
         numerical_features: List[str],
         categorical_features: List[str],
-        n_bins: int = 5,
+        bin_config: Dict[str, int],
     ) -> None:
         """
         Initializes the WOE transformer.
@@ -108,17 +108,20 @@ class WOETransformer:
         Args:
             numerical_features (List[str]): Numerical columns to be binned.
             categorical_features (List[str]): Text columns to be encoded.
-            n_bins (int): The number of intervals to split numerical data into.
+            n_bins Dict[str, int]: The number of intervals to split numerical data into. Gets from config.yaml
         """
         self.numerical_features: List[str] = numerical_features
         self.categorical_features: List[str] = categorical_features
-        self.n_bins: int = n_bins
+        self.n_bins: Dict[str, int] = bin_config
 
         # Stores the cut-off points for each numerical column
         self.bin_edges: Dict[str, np.array] = {}
 
         # Stores the mapping dictionary  from text/bin to WOE score for each column
         self.woe_dictionaries: Dict[str, Dict[str, float]] = {}
+
+        # Stores the IV:
+        self.iv_scores: Dict[str, float] = {}
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "WOETransformer":
         """
@@ -137,8 +140,12 @@ class WOETransformer:
         for col in self.numerical_features:
             # Exclude the -1.0 missing flag to find true statistical quartiles
             valid_data: pd.Series = X_copy[X_copy[col] != -1.0][col]
+
+            # Update: get number of bin from config.yaml
+            n_bins_for_col = self.n_bins.get(col, self.n_bins.get("default_bins", 5))
+
             _, edges = pd.qcut(
-                valid_data, q=self.n_bins, retbins=True, duplicates="drop"
+                valid_data, q=n_bins_for_col, retbins=True, duplicates="drop"
             )
 
             # Extend the lowest boundary to include the -1.0 flag
@@ -153,7 +160,7 @@ class WOETransformer:
                 X_copy[col], bins=edges, include_lowest=True, labels=group_names
             ).astype(str)
 
-        # 2. CALCULATE WOE FOR ALL COLUMNS
+        # 2. CALCULATE WOE; IV FOR ALL COLUMNS
         all_features: List[str] = self.numerical_features + self.categorical_features
 
         total_bad: int = y.sum()
@@ -174,6 +181,12 @@ class WOETransformer:
 
             # Mathematical formula: WoE = ln( %Good / %Bad)
             grouped["woe"] = np.log(grouped["dist_good"] / grouped["dist_bad"])
+
+            # --- METRIC GENERATION: Compute Information Value (IV) for Feature Selection ---
+            grouped["iv_bin"] = (grouped["dist_good"] - grouped["dist_bad"]) * grouped[
+                "woe"
+            ]
+            self.iv_scores[col] = float(grouped["iv_bin"].sum())
 
             # Save the final lookup table
             self.woe_dictionaries[col] = grouped["woe"].to_dict()
@@ -250,16 +263,35 @@ if __name__ == "__main__":
     )
     clean_data = cleaner.fit_transform(sample_X)
 
+    MOCK_BIN_CONFIG = {
+        "default_bins": 2,
+        "person_age": 2,
+        "person_income": 3,  # test
+    }
+
     # Test Tier 2
     woe_transformer = WOETransformer(
-        numerical_features=NUM_COLS, categorical_features=CAT_COLS, n_bins=2
+        numerical_features=NUM_COLS,
+        categorical_features=CAT_COLS,
+        bin_config=MOCK_BIN_CONFIG,
     )
     final_data = woe_transformer.fit_transform(clean_data, sample_y)
 
-    print("\n[Audit] WOE Dictionary for 'person_home_ownership':")
-    for category, score in woe_transformer.woe_dictionaries[
-        "person_home_ownership"
-    ].items():
-        print(f"  - {category}: {score:.4f}")
+    # COMPREHENSIVE SYSTEM AUDIT LOGS
 
-    print("\n[SUCCESS] Pipeline executed")
+    print("\n==================================================")
+    print("[AUDIT] WOE ENCODING")
+    print("==================================================")
+    for feature, woe_dict in woe_transformer.woe_dictionaries.items():
+        print(f"\n Feature Column: {feature}")
+        for category_or_bin, score in woe_dict.items():
+            print(f"    - Sub-group/Bin: {category_or_bin} | WOE Score = {score:.4f}")
+
+    print("[AUDIT] INFORMATION VALUE (IV) SCOREBOARD")
+    for feature, iv in woe_transformer.iv_scores.items():
+        # Classify the Features power base on IV
+        power = "Weak" if iv < 0.1 else "Medium" if iv < 0.3 else "Strong"
+        print(f"  - {feature}: IV = {iv:.4f} | Power: {power}")
+
+    print("\n==================================================")
+    print("[SUCCESS] Preprocessing Pipeline executed with full visibility.")
