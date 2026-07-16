@@ -38,6 +38,14 @@ features:
     - "cb_person_default_on_file"
     - "loan_grade"
 
+    # Dynamic bin counts for optimal binning
+  bin_config:
+    default_bins: 5
+    person_age: 5
+    person_income: 5
+    person_emp_length: 4
+    loan_amnt: 7
+
 # 3. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
 
