@@ -149,7 +149,7 @@ if __name__ == "__main__":
         audit_status = (
             "✅ VALID (Negative)"
             if beta < 0
-            else "❌ CRITICAL ERROR (Positive Beta violates risk math)"[cite:1]
+            else "❌ CRITICAL ERROR (Positive Beta violates risk math)"
         )
         print(
             f"  - Coefficient (Beta) {feature:<10}: {beta:.4f} | Status: {audit_status}"
