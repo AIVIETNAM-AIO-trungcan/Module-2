@@ -221,7 +221,24 @@ class WOETransformer:
             # Lookup the score in our dictionary: default to 0.0 (neutral) if categorical is unknown
             X_copy[col] = X_copy[col].map(self.woe_dictionaries[col]).fillna(0.0)
 
-        return X_copy
+        # 3. AUTOMATIC FEATURE SELECTION BASED ON IV THRESHOLD
+        # Rule: Straightforwardly eliminate features with IV < 0.02.
+        IV_THRESHOLD = 0.02
+
+        # Sifting Mechanics: Retain only features that surpass the regulatory threshold
+        selected_features = [
+            col for col in all_features if self.iv_scores.get(col, 0) >= IV_THRESHOLD
+        ]
+
+        # Audit & Traceability: Output pipeline reduction metrics directly to logs
+        dropped_count = len(all_features) - len(selected_features)
+        if dropped_count > 0:
+            print(
+                f"[FEATURE SELECTION] Safely dropped {dropped_count} weak features with IV < {IV_THRESHOLD}"
+            )
+
+        # Return the optimized matrix containing only qualified WOE encoded predictors
+        return X_copy[selected_features]
 
     def fit_transform(
         self, X: pd.DataFrame, y: Optional[pd.Series] = None
@@ -246,13 +263,14 @@ if __name__ == "__main__":
     print("--- Testing Preprocessing Pipeline ---")
 
     NUM_COLS = ["person_age", "person_income"]
-    CAT_COLS = ["person_home_ownership"]
+    CAT_COLS = ["person_home_ownership", "noise_feature"]
 
     sample_X = pd.DataFrame(
         {
             "person_age": [22, np.nan, 45, 29, 61],
             "person_income": [50000, 85000, np.nan, 42000, 120000],
             "person_home_ownership": ["RENT", "MORTGAGE", "OWN", np.nan, "OWN"],
+            "noise_feature": ["A", "A", "A", "A", "A"],
         }
     )
     sample_y = pd.Series([0, 1, 0, 0, 1])  # 1 = Bad, 0 = Good
@@ -289,9 +307,22 @@ if __name__ == "__main__":
 
     print("[AUDIT] INFORMATION VALUE (IV) SCOREBOARD")
     for feature, iv in woe_transformer.iv_scores.items():
-        # Classify the Features power base on IV
-        power = "Weak" if iv < 0.1 else "Medium" if iv < 0.3 else "Strong"
-        print(f"  - {feature}: IV = {iv:.4f} | Power: {power}")
+        # Check IV < 0.02
+        status = "❌ DROPPED" if iv < 0.02 else "✅ KEPT"
+        power = (
+            "Uninformative"
+            if iv < 0.02
+            else "Weak" if iv < 0.1 else "Medium" if iv < 0.3 else "Strong"
+        )
+        print(
+            f"  - {feature:<25}: IV = {iv:.4f} | Power: {power:<13} | Status: {status}"
+        )
+
+    print("\n==================================================")
+    print("[AUDIT] FINAL MATRICES VALIDATION")
+    print("==================================================")
+    print(f"Original Input Features : {NUM_COLS + CAT_COLS}")
+    print(f"Surviving Output Features: {list(final_data.columns)}")
 
     print("\n==================================================")
     print("[SUCCESS] Preprocessing Pipeline executed with full visibility.")
