@@ -55,6 +55,9 @@ artifacts/runs/**/metrics/
 # Block all generated WOE tables and mathematical CSV reports inside artifacts folder
 artifacts/**/*.csv
 
+# Block all generated deployment JSON manifests inside artifacts folder
+artifacts/**/*.json
+
 # Block all generated visual analysis plot images (.png, .jpg, etc.)
 artifacts/plots/
 artifacts/runs/**/plots/
