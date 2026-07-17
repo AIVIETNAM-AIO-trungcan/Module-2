@@ -55,3 +55,9 @@ model:
     random_state: 42
     max_iter: 100
     c_parameter: 1.0
+
+# 5. Scorecard Scaling Parameters (Financial Engineering Constants)
+scorecard_scaling:
+  base_score: 600 # Target benchmark score
+  base_odds: 50.0 # Good-to-Bad ratio at the base score (50:1)
+  pdo: 20 # Points to Double the Odds
