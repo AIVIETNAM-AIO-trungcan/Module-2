@@ -10,6 +10,7 @@ Usages:
 """
 
 import json
+import time
 import pathlib
 from datetime import datetime
 import numpy as np
@@ -26,7 +27,9 @@ from sklearn.metrics import (
 from typing import Dict, Any
 
 
-# 1. Define time and logging helper functions
+# ==============================================================================
+# 1. Pipeline Execution Logging & Progress Orchestration
+# ==============================================================================
 def get_timestamp() -> str:
     """
     Generates a current localized timestamp string for logging
@@ -54,7 +57,55 @@ def get_run_directory(base_artifacts_dir: pathlib.Path) -> pathlib.Path:
         run_number += 1
 
 
-# 2. Define artifact exporting helpers for model metrics
+def log_progress(
+    step_num: int, total_steps: int, step_name: str, start_time: float
+) -> None:
+    """
+    Calculates and prints the real-time completion percentage and Estimated Time Remaining (ETA).
+    """
+    elapsed_time: float = time.time() - start_time
+    percent: float = (step_num / total_steps) * 100
+
+    if step_num > 0:
+        estimated_total_time: float = (elapsed_time / step_num) * total_steps
+        eta: float = estimated_total_time - elapsed_time
+        eta_str: str = f"{eta:.2f}s"
+    else:
+        eta_str = "Calculating..."
+
+    print(f"\n[PROGRESS] {percent:>5.1f}% | Step {step_num}/{total_steps}: {step_name}")
+    print(f"           Elapsed: {elapsed_time:.2f}s | ETA: {eta_str}")
+    print("-" * 70)
+
+
+# ==============================================================================
+# 2. Structural Data Transformation & Mapping Utilities
+# ==============================================================================
+def extract_structural_bins(
+    X_clean: pd.DataFrame, woe_transformer: Any
+) -> pd.DataFrame:
+    """
+    Converts cleaned raw float profiles into nominal string bin labels.
+    Serves as the vital matching data interface for the Scorecard Scaling Engine.
+
+    Note:
+        The woe_transformer parameter is explicitly typed as Any to neutralize
+        circular compilation loops between utils and preprocessing layers.
+    """
+    X_bins = X_clean.copy()
+    for col in woe_transformer.numerical_features:
+        edges = woe_transformer.bin_edges[col]
+        group_names = [f"Bin_{i}" for i in range(len(edges) - 1)]
+        X_bins[col] = pd.cut(
+            X_bins[col], bins=edges, include_lowest=True, labels=group_names
+        ).astype(str)
+        X_bins[col] = X_bins[col].replace("nan", "Missing")
+    return X_bins[list(woe_transformer.points_map.keys())]
+
+
+# ==============================================================================
+# 3. Artifact Exporting Mechanics (Tabular & Governance Logs)
+# ==============================================================================
 def save_metrics(metrics: Dict[str, Any], file_path: pathlib.Path) -> None:
     """
     Saves validation scores and reports into the artifacts folder as JSON file.
@@ -65,7 +116,6 @@ def save_metrics(metrics: Dict[str, Any], file_path: pathlib.Path) -> None:
     print(f"[UTILS] Metrics successfully saved to: {file_path}")
 
 
-# 3. Define artifact exporting helper for mathematical tables
 def save_woe_tables(
     woe_dicts: Dict[str, Dict[str, float]], folder_path: pathlib.Path
 ) -> None:
@@ -84,7 +134,6 @@ def save_woe_tables(
     )
 
 
-# 4. Define artifact exporting helper for risk governance metrics
 def save_iv_scores(iv_scores: Dict[str, float], file_path: pathlib.Path) -> None:
     """
     Saves the calculated Information Value (IV) scores into a JSON file for model governance.
@@ -95,11 +144,12 @@ def save_iv_scores(iv_scores: Dict[str, float], file_path: pathlib.Path) -> None
     print(f"[UTILS] IV Scores successfully saved to: {file_path}")
 
 
-# 5. Define artifact exporting helper for visual model performance
+# ==============================================================================
+# 4. Analytical Charts & Statistical Visualizations Engine
+# ==============================================================================
 def save_roc_curve(y_true: Any, y_prob: Any, file_path: pathlib.Path) -> None:
     """
     Plots a publication-quality Receiver Operating Characteristic (ROC) curve.
-    Optimized for scientific and technical reporting standards.
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +165,7 @@ def save_roc_curve(y_true: Any, y_prob: Any, file_path: pathlib.Path) -> None:
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
     ax.set_xlabel(
-        "False Positive Rate - FPR (1 - Specificity)",
+        "False Boxitive Rate - FPR (1 - Specificity)",
         fontsize=11,
         labelpad=10,
         color="#1e293b",
@@ -153,7 +203,6 @@ def save_roc_curve(y_true: Any, y_prob: Any, file_path: pathlib.Path) -> None:
     print(f"[UTILS] Publication-grade ROC Curve successfully exported to: {file_path}")
 
 
-# 6. Define artifact exporting helper for confusion matrix and classification scores
 def save_classification_report(
     y_true: Any, y_pred: Any, y_prob: Any, file_path: pathlib.Path
 ) -> None:
@@ -163,10 +212,8 @@ def save_classification_report(
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Extract the four core quadrants of the confusion matrix
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
 
-    # Calculate KS Statistic: Max separation distance between TPR and FPR
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     ks_statistic = float(np.max(tpr - fpr))
 
@@ -193,7 +240,6 @@ def save_classification_report(
     )
 
 
-# 7. Define artifact exporting helper for Predict vs Actual distribution
 def save_probability_distribution(
     y_true: Any, y_prob: Any, file_path: pathlib.Path
 ) -> None:
@@ -205,20 +251,15 @@ def save_probability_distribution(
     y_true_arr = np.array(y_true)
     y_prob_arr = np.array(y_prob)
 
-    # Avoid division by zero or log of zero by clipping small probabilities safely
     eps = 1e-6
     clipped_prob = np.clip(y_prob_arr, eps, 1.0 - eps)
-
-    # Inverse of sigmoid: compute Log-Odds (Logit scores) for the horizontal axis
     logits = np.log(clipped_prob / (1.0 - clipped_prob))
 
-    # Generate smooth continuous logit values to render the theoretical S-curve smoothly
     logit_range = np.linspace(np.min(logits) - 1.5, np.max(logits) + 1.5, 300)
     sigmoid_curve = 1.0 / (1.0 + np.exp(-logit_range))
 
     fig, ax = plt.subplots(figsize=(7.5, 5))
 
-    # 1. Plot the theoretical S-shaped Sigmoid curve as the baseline reference
     ax.plot(
         logit_range,
         sigmoid_curve,
@@ -228,7 +269,6 @@ def save_probability_distribution(
         label="Theoretical Sigmoid Fit",
     )
 
-    # 2. Plot actual ground truth observations at the top (y=1 for Bad) and bottom (y=0 for Good)
     ax.scatter(
         logits[y_true_arr == 0],
         y_true_arr[y_true_arr == 0],
@@ -250,7 +290,6 @@ def save_probability_distribution(
         label="Actual Bad (Class 1)",
     )
 
-    # 3. Plot the specific model predictions directly on the curve to show mapping alignment
     ax.scatter(
         logits,
         y_prob_arr,
@@ -262,7 +301,6 @@ def save_probability_distribution(
         label="Predicted Probability (PD)",
     )
 
-    # 4. Clean & Clear styling for executive reporting
     ax.set_xlabel(
         "Log-Odds / Logit Score (Linear Combination)",
         fontsize=11,
@@ -288,7 +326,6 @@ def save_probability_distribution(
         loc="upper left", fontsize=9, frameon=True, facecolor="white", edgecolor="none"
     )
 
-    # Strip non-essential boundaries
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_color("#64748b")
@@ -300,26 +337,20 @@ def save_probability_distribution(
     print(f"[UTILS] Sigmoid Alignment chart successfully exported to: {file_path}")
 
 
-# 8. Define artifact exporting helper for visual confusion matrix heatmap
 def save_confusion_matrix_heatmap(
     y_true: Any, y_pred: Any, file_path: pathlib.Path
 ) -> None:
     """
     Plots a crisp, publication-grade confusion matrix heatmap using pure matplotlib.
-    Features smart contrasting label generation based on grid depth.
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
     cm = confusion_matrix(y_true, y_pred)
 
     fig, ax = plt.subplots(figsize=(5.5, 5))
-
-    # Render technical grid matrix representation
     cax = ax.imshow(cm, cmap=plt.cm.Blues, alpha=0.7)
 
-    # Overlay statistical counts inside the coordinate boxes dynamically
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
-            # Set font color conditionally to ensure crisp readability against matrix depth
             text_color = "white" if cm[i, j] > (cm.max() / 2) else "#0f172a"
             ax.text(
                 x=j,
@@ -332,7 +363,6 @@ def save_confusion_matrix_heatmap(
                 color=text_color,
             )
 
-    # Academic layout cleanup
     ax.set_xticks([0, 1])
     ax.set_yticks([0, 1])
     ax.set_xticklabels(
@@ -356,7 +386,6 @@ def save_confusion_matrix_heatmap(
         color="#0f172a",
     )
 
-    # Strip unnecessary borders
     for spine in ax.spines.values():
         spine.set_visible(False)
 
@@ -365,13 +394,23 @@ def save_confusion_matrix_heatmap(
     print(f"[UTILS] Confusion Matrix Heatmap successfully exported to: {file_path}")
 
 
+# ==============================================================================
 # INTERNAL TEST BLOCK
+# ==============================================================================
 if __name__ == "__main__":
     print("--- Executing Utility Module Independency ---")
-    from src.config import ARTIFACTS_DIR, METRICS_DIR
+    from src.config import ARTIFACTS_DIR
 
     current_time = get_timestamp()
     print(f"[TEST] Current system timestamp: {current_time}")
+
+    # Test 1: Progress logging check
+    log_progress(
+        step_num=1,
+        total_steps=3,
+        step_name="Mock Progress Ingestion",
+        start_time=time.time(),
+    )
 
     # Test 2: Metrics logging
     MOCK_METRICS = {
@@ -380,7 +419,9 @@ if __name__ == "__main__":
         "status": "active",
     }
     try:
-        save_metrics(MOCK_METRICS, METRICS_DIR / "test_baseline_performance.json")
+        save_metrics(
+            MOCK_METRICS, ARTIFACTS_DIR / "metrics" / "test_baseline_performance.json"
+        )
     except Exception as e:
         print(f"[TEST FAILED] Metrics stop: {str(e)}")
 
@@ -413,7 +454,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[TEST FAILED] ROC plot stop: {str(e)}")
 
-    # Test 6: Updated Classification Report (including KS statistic verification)
+    # Test 6: Updated Classification Report
     try:
         save_classification_report(
             y_true=MOCK_Y_TRUE,
@@ -426,7 +467,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[TEST FAILED] Classification report stop: {str(e)}")
 
-    # Test 7: NEW - Verify Predict vs Actual distribution mapping chart
+    # Test 7: Verify Predict vs Actual distribution mapping chart
     try:
         save_probability_distribution(
             y_true=MOCK_Y_TRUE,
@@ -436,7 +477,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[TEST FAILED] Prob distribution stop: {str(e)}")
 
-    # Test 8: NEW - Verify publication-grade confusion matrix heatmap
+    # Test 8: Verify confusion matrix heatmap
     try:
         save_confusion_matrix_heatmap(
             y_true=MOCK_Y_TRUE,
