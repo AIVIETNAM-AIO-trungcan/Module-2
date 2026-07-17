@@ -20,6 +20,7 @@ from typing import Dict, List, Any
 from src.data_loader import load_raw_training_data, split_train_val_test
 from src.preprocessing import CreditDataCleaner, WOETransformer
 from src.model import CreditModelTrainer
+from src.scorecard import CreditScorecardScaler
 from src.config import ARTIFACTS_DIR
 from src.utils import (
     get_run_directory,
@@ -29,49 +30,14 @@ from src.utils import (
     save_woe_tables,
     save_probability_distribution,
     save_confusion_matrix_heatmap,
+    log_progress,
+    extract_structural_bins,
 )
-
-
-def log_progress(
-    step_num: int, total_steps: int, step_name: str, start_time: float
-) -> None:
-    """
-    Calculates and prints the real-time completion percentage and Estimated Time Remaining (ETA).
-
-    Args:
-        step_num (int): The current active step number in the pipeline.
-        total_steps (int): Total number of sequential steps in the pipeline execution.
-        step_name (str): Descriptive label of the logic block being executed.
-        start_time (float): The Unix timestamp recorded at the start of the pipeline.
-
-    Inputs:
-        - Epoch time measurements from the native time module.
-    Outputs:
-        - Formatted execution metrics printed directly to the system console log.
-    """
-    elapsed_time: float = time.time() - start_time
-    percent: float = (step_num / total_steps) * 100
-
-    if step_num > 0:
-        estimated_total_time: float = (elapsed_time / step_num) * total_steps
-        eta: float = estimated_total_time - elapsed_time
-        eta_str: str = f"{eta:.2f}s"
-    else:
-        eta_str = "Calculating..."
-
-    print(f"\n[PROGRESS] {percent:>5.1f}% | Step {step_num}/{total_steps}: {step_name}")
-    print(f"           Elapsed: {elapsed_time:.2f}s | ETA: {eta_str}")
-    print("-" * 70)
 
 
 def main() -> None:
     """
     Master orchestrator function for the Credit Risk Scorecard development pipeline.
-
-    Executes an end-to-end data science lifecycle over 7 decoupled steps:
-    Configurations loading, raw file acquisition, stratified splitting, target separation,
-    missing/outlier processing, mathematical WOE encoding, model fitting, validation checks,
-    and a structured MLOps release generation.
     """
     print("======================================================================")
     print("🚀 STARTING PRODUCTION-GRADE CREDIT RISK SCORECARD WORKFLOW")
@@ -86,7 +52,6 @@ def main() -> None:
     # PURPOSE: Fetch runtime parameters centrally to eliminate hardcoded values.
     # INPUTS:  File system text path ("config.yaml").
     # OUTPUTS: List[str] NUM_COLS, List[str] CAT_COLS, str TARGET_COL, Dict config registry.
-    # DATA STATE: Infrastructure parameters loaded into runtime RAM dictionary memory.
     # --------------------------------------------------------------------------
     log_progress(
         1, TOTAL_STEPS, "Loading Configuration Registry (config.yaml)", start_time
@@ -110,7 +75,6 @@ def main() -> None:
     # PURPOSE: Pull the primary structural data table from local storage into memory.
     # INPUTS:  Constructed relative OS directory path string ("data/raw/credit_risk_dataset.csv").
     # OUTPUTS: pd.DataFrame df_raw containing the original unmodified dataset matrix.
-    # DATA STATE: Unprocessed Raw Matrix [32581 rows x 12 columns] in RAM.
     # --------------------------------------------------------------------------
     log_progress(2, TOTAL_STEPS, "Acquiring Raw Data Registry from Disk", start_time)
     data_path: str = os.path.join("data", "raw", config["data"]["raw_file_name"])
@@ -119,11 +83,9 @@ def main() -> None:
     # --------------------------------------------------------------------------
     # STEP 3: ANTI-LEAKAGE STRATIFIED PARTITIONING & TARGET ISOLATION
     # --------------------------------------------------------------------------
-    # PURPOSE: Segregate data into independent evaluation populations and strip target variables
-    #          to completely block validation information from leaking into training cycles.
+    # PURPOSE: Segregate data into independent evaluation populations and strip target variables.
     # INPUTS:  pd.DataFrame df_raw, str TARGET_COL, Dict split_params (sizes, random_state).
     # OUTPUTS: Feature matrices (X_train, X_val, X_test) and target arrays (y_train, y_val, y_test).
-    # DATA STATE: Stratified Split Separation [Train: 64% | Val: 16% | Test: 20%].
     # --------------------------------------------------------------------------
     log_progress(
         3, TOTAL_STEPS, "Executing Stratified Data Split Segregation", start_time
@@ -153,7 +115,6 @@ def main() -> None:
     # PURPOSE: Handle null entries by imputing uniform risk flags (-1.0 and "Missing").
     # INPUTS:  Feature dataframes (X_train, X_val, X_test).
     # OUTPUTS: pd.DataFrame arrays (X_train_clean, X_val_clean, X_test_clean).
-    # DATA STATE: Universal Imputed State (No missing values remain, original scales intact).
     # --------------------------------------------------------------------------
     log_progress(4, TOTAL_STEPS, "Running Tier-1 Data Cleaner Pipeline", start_time)
     cleaner: CreditDataCleaner = CreditDataCleaner(
@@ -168,11 +129,9 @@ def main() -> None:
     # --------------------------------------------------------------------------
     # STEP 5: TIER-2 DYNAMIC WOE BINNING & ENCODING
     # --------------------------------------------------------------------------
-    # PURPOSE: Convert raw variables into relative risk scales using Weight of Evidence (WOE)
-    #          and calculate feature Information Values (IV) to eliminate weak predictors.
+    # PURPOSE: Convert raw variables into relative risk scales using Weight of Evidence (WOE).
     # INPUTS:  Imputed matrices (X_train_clean, X_val_clean, X_test_clean), pd.Series y_train.
     # OUTPUTS: pd.DataFrame arrays (X_train_woe, X_val_woe, X_test_woe) [Filtered to IV >= 0.02].
-    # DATA STATE: WOE Encoded Nonlinear Risk Metrics Matrix ready for regression mapping.
     # --------------------------------------------------------------------------
     log_progress(
         5, TOTAL_STEPS, "Running Tier-2 WOE Transformation & IV Filtering", start_time
@@ -194,8 +153,7 @@ def main() -> None:
     # --------------------------------------------------------------------------
     # PURPOSE: Optimize beta coefficients via Logistic Regression and audit basic model health.
     # INPUTS:  pd.DataFrame X_train_woe, pd.Series y_train, Dict config["model"].
-    # OUTPUTS: Trained CreditModelTrainer engine, np.ndarray array classifications/probabilities.
-    # DATA STATE: Trained model weight vectors locked inside memory instance.
+    # OUTPUTS: Trained CreditModelTrainer engine.
     # --------------------------------------------------------------------------
     log_progress(
         6, TOTAL_STEPS, "Training Logistic Regression & Auditing Betas", start_time
@@ -216,9 +174,8 @@ def main() -> None:
     # STEP 7: MLOPS ARTIFACT STORAGE PACKAGING & MULTI-POPULATION EXPORT
     # --------------------------------------------------------------------------
     # PURPOSE: Release evaluation packages, save processed datasets, and export the final model.
-    # INPUTS:  All processed features, true targets, predicted predictions, validation metrics.
+    # INPUTS:  All processed features, true targets, predicted classifications, and validation metrics.
     # OUTPUTS: Flat CSV arrays, structured JSON performance logs, PNG analysis curves, serialized PKL.
-    # DATA STATE: Physical artifacts permanently written to file system directories.
     # --------------------------------------------------------------------------
     log_progress(
         7, TOTAL_STEPS, "Generating Isolated Run Packages & Visualizations", start_time
@@ -232,12 +189,27 @@ def main() -> None:
     (current_run_dir / "metrics").mkdir(parents=True, exist_ok=True)
     (current_run_dir / "models").mkdir(parents=True, exist_ok=True)
     (current_run_dir / "data").mkdir(parents=True, exist_ok=True)
+    (current_run_dir / "tables").mkdir(parents=True, exist_ok=True)
+
+    # --- FINANCIAL SCORE SCALE CONVERSION ---
+    print("[MLOPS] Activating Scorecard Scaling Transformation...")
+    score_scaler = CreditScorecardScaler(scaling_config=config["scorecard_scaling"])
+    score_scaler.fit(model_trainer=model_trainer, woe_transformer=woe_transformer)
+
+    # Reconstruct string nominal matrices for lookup scoring via utilities layer
+    X_train_bins = extract_structural_bins(X_train_clean, woe_transformer)
+    X_val_bins = extract_structural_bins(X_val_clean, woe_transformer)
+    X_test_bins = extract_structural_bins(X_test_clean, woe_transformer)
+
+    # Execute absolute credit score computation
+    train_scores: pd.Series = score_scaler.transform(X_train_bins)
+    val_scores: pd.Series = score_scaler.transform(X_val_bins)
+    test_scores: pd.Series = score_scaler.transform(X_test_bins)
 
     # --- PHYSICAL DATASETS EXPORTATION ---
     print("[MLOPS] Saving processed row-level datasets to storage records...")
 
-    # 1. Global Workspace Sync (data/processed/) -> Pure imputation, no WOE processing
-    # Data here retains original values with missing values imputed, ready for XGBoost/Random Forest
+    # 1. Global Workspace Sync (data/processed/) -> Pure imputation, no WOE, no score
     global_train_final = X_train_clean.copy()
     global_train_final[TARGET_COL] = y_train
 
@@ -250,7 +222,6 @@ def main() -> None:
     global_processed_dir: Path = Path("data/processed")
     global_processed_dir.mkdir(parents=True, exist_ok=True)
 
-    # Change filenames to _clean to explicitly state the universal cleaned nature of the data
     global_train_final.to_csv(global_processed_dir / "train_clean.csv", index=False)
     global_val_final.to_csv(global_processed_dir / "val_clean.csv", index=False)
     global_test_final.to_csv(global_processed_dir / "test_clean.csv", index=False)
@@ -258,15 +229,17 @@ def main() -> None:
         f"  -> Universal cleaned data (No WOE) synchronized at: {global_processed_dir}/"
     )
 
-    # 2. Historical Locked Tracking (artifacts/runs/.../data/) -> Retain WOE encoding
-    # Lock exact historical state of WOE encoded data fed into this Logistic Regression model for auditability
+    # 2. Historical Locked Tracking (artifacts/runs/.../data/) -> Retain WOE & Append Score
     train_historical = X_train_woe.copy()
+    train_historical["credit_score"] = train_scores
     train_historical[TARGET_COL] = y_train
 
     val_historical = X_val_woe.copy()
+    val_historical["credit_score"] = val_scores
     val_historical[TARGET_COL] = y_val
 
     test_historical = X_test_woe.copy()
+    test_historical["credit_score"] = test_scores
     test_historical[TARGET_COL] = y_test
 
     train_historical.to_csv(
@@ -275,10 +248,10 @@ def main() -> None:
     val_historical.to_csv(current_run_dir / "data" / "val_woe_final.csv", index=False)
     test_historical.to_csv(current_run_dir / "data" / "test_woe_final.csv", index=False)
     print(
-        f"  -> Historical run data (WOE encoded) securely locked inside: {current_run_dir}/data/"
+        f"  -> Historical run data (WOE & Credit Score) locked inside: {current_run_dir}/data/"
     )
 
-    # Save training metrics rules
+    # Save training metrics rules & Scorecard Look-ups
     save_iv_scores(
         iv_scores=woe_transformer.iv_scores,
         file_path=current_run_dir / "metrics" / "baseline_iv_scores.json",
@@ -287,6 +260,8 @@ def main() -> None:
         woe_dicts=woe_transformer.woe_dictionaries,
         folder_path=current_run_dir / "tables",
     )
+    score_scaler.export_artifacts(folder_path=current_run_dir / "tables")
+    score_scaler.plot_monotonic_barcharts(folder_path=current_run_dir / "plots")
 
     # --- POPULATION A: TRAINING PERFORMANCE REPORT ---
     train_report_path: Path = (
@@ -355,7 +330,10 @@ def main() -> None:
     )
 
     # --- MODEL BINARY LOCK ---
-    model_export_path: Path = current_run_dir / "models" / "baseline_logistic_model.pkl"
+    model_name = config["model"]["logistic_regression"].get(
+        "model_file_name", "baseline_logistic_model.pkl"
+    )
+    model_export_path: Path = current_run_dir / "models" / model_name
     joblib.dump(model_trainer, model_export_path)
     print(
         f"[MLOPS] Production model binary successfully locked at: {model_export_path}"
