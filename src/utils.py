@@ -100,7 +100,7 @@ def extract_structural_bins(
             X_bins[col], bins=edges, include_lowest=True, labels=group_names
         ).astype(str)
         X_bins[col] = X_bins[col].replace("nan", "Missing")
-    return X_bins[list(woe_transformer.points_map.keys())]
+    return X_bins
 
 
 # ==============================================================================
