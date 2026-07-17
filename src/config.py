@@ -10,6 +10,7 @@ Usages:
 """
 
 import pathlib
+import yaml
 
 # 1. Locate the absolute path of this specific config.py file
 CURRENT_FILE_PATH = pathlib.Path(__file__).resolve()
@@ -23,30 +24,27 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-MODELS_DIR = ARTIFACTS_DIR / "models"
-PREPROCESSORED_DIR = ARTIFACTS_DIR / "preprocessors"
-METRICS_DIR = ARTIFACTS_DIR / "metrics"
 
 # 4. Define specific paths for data files and serialized models
-RAW_DATA_FILE = RAW_DATA_DIR / "credit_risk_dataset.csv"
-TRAIN_DATA_FILE = PROCESSED_DATA_DIR / "train.csv"
-VAL_DATA_FILE = PROCESSED_DATA_DIR / "val.csv"
-TEST_DATA_FILE = PROCESSED_DATA_DIR / "test.csv"
+CONFIG_YAML_PATH = PROJECT_ROOT / "config.yaml"
 
-MODEL_FILE = MODELS_DIR / "logistic_regression_baseline.pkl"
-PREPROCESSOR_FILE = PREPROCESSORED_DIR / "preprocessor.pkl"
+with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+    pipeline_config = yaml.safe_load(f)
+
+RAW_FILE_NAME = pipeline_config["data"]["raw_file_name"]
+
+RAW_DATA_FILE = RAW_DATA_DIR / RAW_FILE_NAME
+
 
 # Safety Check: Automatically  create directories if they do not exist
 for path in [
     RAW_DATA_DIR,
     PROCESSED_DATA_DIR,
-    MODELS_DIR,
-    PREPROCESSORED_DIR,
-    METRICS_DIR,
+    ARTIFACTS_DIR,
 ]:
     path.mkdir(parents=True, exist_ok=True)
 
 # Test execution to verify paths when running this script directly
 if __name__ == "__main__":
     print(f"Project Root Directory: {PROJECT_ROOT}")
-    print(f"Raw Data File Path: {RAW_DATA_FILE}")
+    print(f"Dynamic Raw Data Path:  {RAW_DATA_FILE}")
