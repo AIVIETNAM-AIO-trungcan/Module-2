@@ -49,27 +49,47 @@ class CreditDataCleaner:
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Fills missing values in the provides dataset.
+        Fills missing values in the provided dataset.
 
         Args:
-            X (pd.DataFrame): the raw input dataframe.
+            X (pd.DataFrame): The raw input dataframe.
 
         Returns:
-            pd.DataFrame: A clean dataframe with no NaN values.
+            pd.DataFrame: A clean dataframe with invalid, duplicate, and missing values handled.
         """
         X_clean: pd.DataFrame = X.copy()
 
-        # Fill missing numbers with -1.0
-        if self.numerical_features:
-            X_clean[self.numerical_features] = X_clean[self.numerical_features].fillna(
-                -1.0
-            )
+        # Remove duplicate records
+        X_clean = X_clean.drop_duplicates()
 
-        # Fill missing text with "Missing"
+        # Remove invalid records
+        if "person_age" in X_clean.columns:
+            X_clean = X_clean[X_clean["person_age"] < 100]
+
+        if "person_emp_length" in X_clean.columns:
+            X_clean = X_clean[X_clean["person_emp_length"] < 100]
+
+        # Convert loan grades into ordinal scores
+        if "loan_grade" in X_clean.columns:
+            grade_mapping = {
+                "A": 7,
+                "B": 6,
+                "C": 5,
+                "D": 4,
+                "E": 3,
+                "F": 2,
+                "G": 1,
+            }
+
+            X_clean["loan_grade"] = X_clean["loan_grade"].map(grade_mapping)
+
+        # Fill missing numerical values with -1.0
+        if self.numerical_features:
+            X_clean[self.numerical_features] = (X_clean[self.numerical_features].fillna(-1.0))
+
+        # Fill missing categorical values with "Missing"
         if self.categorical_features:
-            X_clean[self.categorical_features] = X_clean[
-                self.categorical_features
-            ].fillna("Missing")
+            X_clean[self.categorical_features] = (X_clean[self.categorical_features].fillna("Missing"))
 
         return X_clean
 

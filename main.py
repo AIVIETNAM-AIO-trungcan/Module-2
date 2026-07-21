@@ -123,8 +123,13 @@ def main() -> None:
 
     # LEAKAGE SAFEGUARD: Fit parameters ONLY on training set, then transform others
     X_train_clean: pd.DataFrame = cleaner.fit_transform(X_train)
+    y_train = y_train.loc[X_train_clean.index]
+
     X_val_clean: pd.DataFrame = cleaner.transform(X_val)
+    y_val = y_val.loc[X_val_clean.index]
+
     X_test_clean: pd.DataFrame = cleaner.transform(X_test)
+    y_test = y_test.loc[X_test_clean.index]
 
     # --------------------------------------------------------------------------
     # STEP 5: TIER-2 DYNAMIC WOE BINNING & ENCODING
