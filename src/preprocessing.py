@@ -69,20 +69,6 @@ class CreditDataCleaner:
         if "person_emp_length" in X_clean.columns:
             X_clean = X_clean[X_clean["person_emp_length"] < 100]
 
-        # Convert loan grades into ordinal scores
-        if "loan_grade" in X_clean.columns:
-            grade_mapping = {
-                "A": 7,
-                "B": 6,
-                "C": 5,
-                "D": 4,
-                "E": 3,
-                "F": 2,
-                "G": 1,
-            }
-
-            X_clean["loan_grade"] = X_clean["loan_grade"].map(grade_mapping)
-
         # Fill missing numerical values with -1.0
         if self.numerical_features:
             X_clean[self.numerical_features] = (X_clean[self.numerical_features].fillna(-1.0))
