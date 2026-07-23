@@ -36,7 +36,7 @@ class CreditDataCleaner:
     ) -> "CreditDataCleaner":
         """
         Since we use fixed constants (-1.0 and 'Missing'), there is nothing to learn from the data
-        This function exitss tp maintain a standard pipeline structure.
+        This function exists to maintain a standard pipeline structure.
 
         Args:
             X (pd.DataFrame): Training data
@@ -71,11 +71,15 @@ class CreditDataCleaner:
 
         # Fill missing numerical values with -1.0
         if self.numerical_features:
-            X_clean[self.numerical_features] = (X_clean[self.numerical_features].fillna(-1.0))
+            X_clean[self.numerical_features] = X_clean[self.numerical_features].fillna(
+                -1.0
+            )
 
         # Fill missing categorical values with "Missing"
         if self.categorical_features:
-            X_clean[self.categorical_features] = (X_clean[self.categorical_features].fillna("Missing"))
+            X_clean[self.categorical_features] = X_clean[
+                self.categorical_features
+            ].fillna("Missing")
 
         return X_clean
 
@@ -128,6 +132,9 @@ class WOETransformer:
 
         # Stores the IV:
         self.iv_scores: Dict[str, float] = {}
+        self.selected_features_: List[str] = (
+            []
+        )  # Add this variable to store features that pass the IV threshold
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "WOETransformer":
         """
@@ -197,6 +204,59 @@ class WOETransformer:
             # Save the final lookup table
             self.woe_dictionaries[col] = grouped["woe"].to_dict()
 
+        # 3. SAVE THE QUALIFIED FEATURE LIST BASED ON IV (Learned from Train set only)
+        # Rule: Straightforwardly eliminate features with IV < 0.02.
+        IV_THRESHOLD = 0.02
+        # Rule 2: Eliminate highly correlated features (Pearson |r| >= 0.7), retaining the one with higher IV.
+        CORR_THRESHOLD = 0.7
+
+        # Sifting Mechanics (Phase 1): Retain only features that surpass the regulatory IV threshold
+        iv_qualified_features = [
+            col for col in all_features if self.iv_scores.get(col, 0) >= IV_THRESHOLD
+        ]
+
+        # Sifting Mechanics (Phase 2): Detect and resolve multicollinearity using WoE-encoded value
+        if len(iv_qualified_features) > 1:
+            # Reconstruct a temporary WoE matrix to calculate correlations
+            temp_woe_df = pd.DataFrame()
+            for col in iv_qualified_features:
+                temp_woe_df[col] = (
+                    X_copy[col].astype(str).map(self.woe_dictionaries[col]).fillna(0.0)
+                )
+
+            # Calculate the absolute  Pearson correlation matrix
+            corr_matrix = temp_woe_df.corr().abs()
+            features_to_drop = set()
+
+            # Scan the lower triangle of the correlation matrix to identify redundant predictors
+            for i in range(len(corr_matrix.columns)):
+                for j in range(i):
+                    if corr_matrix.iloc[i, j] >= CORR_THRESHOLD:
+                        col1 = corr_matrix.columns[i]
+                        col2 = corr_matrix.columns[j]
+                        # Retain the predictor with higher Information Value(IV)
+                        if self.iv_scores[col1] > self.iv_scores[col2]:
+                            features_to_drop.add(col2)
+                        else:
+                            features_to_drop.addd(col1)
+
+            # Finalize the structural array by excluding correlated features
+            self.selected_features = [
+                f for f in iv_qualified_features if f not in features_to_drop
+            ]
+        else:
+            self.selected_features = iv_qualified_features
+
+        # Audit & Traceability: Output pipeline reduction metrics directly to logs
+        iv_dropped = len(all_features) - len(iv_qualified_features)
+        corr_dropped = len(iv_qualified_features) - len(self.selected_features_)
+
+        if iv_dropped > 0 or corr_dropped > 0:
+            print(
+                f"[FEATURE SELECTION] Safely dropped {iv_dropped} weak features (IV < {IV_THRESHOLD}) "
+                f"and {corr_dropped} redundant features (Correlation >= {CORR_THRESHOLD})"
+            )
+
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -228,23 +288,9 @@ class WOETransformer:
             X_copy[col] = X_copy[col].map(self.woe_dictionaries[col]).fillna(0.0)
 
         # 3. AUTOMATIC FEATURE SELECTION BASED ON IV THRESHOLD
-        # Rule: Straightforwardly eliminate features with IV < 0.02.
-        IV_THRESHOLD = 0.02
-
-        # Sifting Mechanics: Retain only features that surpass the regulatory threshold
-        selected_features = [
-            col for col in all_features if self.iv_scores.get(col, 0) >= IV_THRESHOLD
-        ]
-
-        # Audit & Traceability: Output pipeline reduction metrics directly to logs
-        dropped_count = len(all_features) - len(selected_features)
-        if dropped_count > 0:
-            print(
-                f"[FEATURE SELECTION] Safely dropped {dropped_count} weak features with IV < {IV_THRESHOLD}"
-            )
 
         # Return the optimized matrix containing only qualified WOE encoded predictors
-        return X_copy[selected_features]
+        return X_copy[self.selected_features]
 
     def fit_transform(
         self, X: pd.DataFrame, y: Optional[pd.Series] = None
