@@ -154,7 +154,7 @@ def main() -> None:
     X_test_woe: pd.DataFrame = woe_transformer.transform(X_test_clean)
 
     # --------------------------------------------------------------------------
-    # STEP 6: MODEL HUẤN LUYỆN & TRAINING SET SANITY CHECK
+    # STEP 6: MODEL TRAINING & TRAINING SET SANITY CHECK
     # --------------------------------------------------------------------------
     # PURPOSE: Optimize beta coefficients via Logistic Regression and audit basic model health.
     # INPUTS:  pd.DataFrame X_train_woe, pd.Series y_train, Dict config["model"].
@@ -235,15 +235,17 @@ def main() -> None:
     )
 
     # 2. Historical Locked Tracking (artifacts/runs/.../data/) -> Retain WOE & Append Score
-    train_historical = X_train_woe.copy()
+    final_features = model_trainer.final_features_
+
+    train_historical = X_train_woe[final_features].copy()
     train_historical["credit_score"] = train_scores
     train_historical[TARGET_COL] = y_train
 
-    val_historical = X_val_woe.copy()
+    val_historical = X_val_woe[final_features].copy()
     val_historical["credit_score"] = val_scores
     val_historical[TARGET_COL] = y_val
 
-    test_historical = X_test_woe.copy()
+    test_historical = X_test_woe[final_features].copy()
     test_historical["credit_score"] = test_scores
     test_historical[TARGET_COL] = y_test
 
@@ -339,10 +341,20 @@ def main() -> None:
         "model_file_name", "baseline_logistic_model.pkl"
     )
     model_export_path: Path = current_run_dir / "models" / model_name
+    cleaner_export_path: Path = current_run_dir / "models" / "cleaner.pkl"
+    woe_tf_export_path: Path = current_run_dir / "models" / "woe_transformer.pkl"
+    scaler_export_path: Path = current_run_dir / "models" / "score_scaler.pkl"
+
     joblib.dump(model_trainer, model_export_path)
-    print(
-        f"[MLOPS] Production model binary successfully locked at: {model_export_path}"
-    )
+    joblib.dump(cleaner, cleaner_export_path)
+    joblib.dump(woe_transformer, woe_tf_export_path)
+    joblib.dump(score_scaler, scaler_export_path)
+
+    print("[MLOPS] Production artifacts successfully locked:")
+    print(f"  -> Model     : {model_export_path}")
+    print(f"  -> Cleaner   : {cleaner_export_path}")
+    print(f"  -> WOE Trans : {woe_tf_export_path}")
+    print(f"  -> Scaler    : {scaler_export_path}")
 
     # ==============================================================================
     # FINAL EXECUTIVE PERFORMANCE AUDIT SUMMARIES
