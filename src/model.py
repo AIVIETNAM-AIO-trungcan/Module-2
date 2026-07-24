@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 class CreditModelTrainer:
     """
     Wraps the Loogistic Regression model to handle dynamic hyperparameter extraction
-    and enforce banking risk validation workflows.
+    and enforce banking risk validation workflows via Auto Backward Elimination.
     """
 
     def __init__(self, model_config: Dict[str, Any]) -> None:
@@ -44,7 +44,8 @@ class CreditModelTrainer:
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "CreditModelTrainer":
         """
         Fit the Logistic Regression model using the pre-extracted dynamic hyperparameters
-        Support method chaining by returning the instance itself.
+        Fits the model using an iterative Backward Elimination process to ensure
+        all beta coefficients are negative, complying with WOE scorecard math.
 
         Args:
             X (pd.DataFrame): Training feature matrix (must be WOE-encoded).
@@ -53,20 +54,46 @@ class CreditModelTrainer:
         Returns:
             CreditModelTrainer: The fitted instance itself.
         """
-        # Core Engine Initializtion
-        self.model = LogisticRegression(
-            C=self.C,
-            max_iter=self.max_iter,
-            random_state=self.random_state,
-            solver="lbfgs",  # Standard stable solver for creditscore
-        )
+        self.final_features_ = list(X.columns)
+        iteration = 1
 
-        # Excecute training process
-        self.model.fit(X, y)
+        while True:
+            # Core Engine Initialization
+            self.model = LogisticRegression(
+                C=self.C,
+                max_iter=self.max_iter,
+                random_state=self.random_state,
+                solver="lbfgs",  # Standard stable solver for credit scoring
+            )
 
-        # Extract and catalog coefficient for regulatory risk auditing
+            # Train using only the currently surviving features
+            self.model.fit(X[self.final_features_], y)
+
+            # Check for Sign Reversal (Beta >= 0)
+            betas = self.model.coef_[0]
+            positive_betas = [
+                feat for feat, beta in zip(self.final_features_, betas) if beta >= 0
+            ]
+
+            if not positive_betas:
+                # All betas are strictly negative. The model is mathematically sound.
+                break
+
+            # Audit & Traceability: Log the dropped features due to sign reversal
+            print(
+                f"[REGULATORY AUDIT] Iteration {iteration}: Safely dropped {len(positive_betas)} features "
+                f"due to Sign Reversal (Beta >= 0) -> {positive_betas}"
+            )
+
+            # Drop invalid features and loop again for retraining
+            for feat in positive_betas:
+                self.final_features_.remove(feat)
+
+            iteration += 1
+
+        # Extract and catalog coefficients for regulatory risk auditing
         self.intercept_ = float(self.model.intercept_[0])
-        for feature_name, coef_value in zip(X.columns, self.model.coef_[0]):
+        for feature_name, coef_value in zip(self.final_features_, self.model.coef_[0]):
             self.coefficients_[feature_name] = float(coef_value)
 
         return self
