@@ -110,7 +110,7 @@ class CreditModelTrainer:
         """
         if self.model is None:
             raise ValueError("[ERROR] Model must be fitted before running prediction.")
-        return self.model.predict(X)
+        return self.model.predict(X[self.final_features_])
 
     def predict_probability(self, X: pd.DataFrame) -> np.ndarray:
         """
@@ -125,7 +125,7 @@ class CreditModelTrainer:
         """
         if self.model is None:
             raise ValueError("[ERROR] Model must be fitted before running prediction.")
-        return self.model.predict_proba(X)[:, 1]
+        return self.model.predict_proba(X[self.final_features_])[:, 1]
 
 
 # INTERNAL TEST BLOCK (SANDBOX)
