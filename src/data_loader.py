@@ -2,18 +2,18 @@
 Data Loader and Splitting Module
 --------------------------------
 Purpose:
-    This module is delicated to the training and validation phase.
+    This module is dedicated to the training and validation phase.
     It loads the local raw dataset and splits it into Train, Validation and Test sets
-    Applyting stratified splitting to maintain the class distribution of imbalanced data
+    Applying stratified splitting to maintain the class distribution of imbalanced data
 """
 
 import pandas as pd
-from typing import Tuple
+from typing import Tuple, Dict, Any, Optional
 from sklearn.model_selection import train_test_split
 from src.config import RAW_DATA_FILE
 
 
-def load_raw_training_data() -> pd.DataFrame:
+def load_raw_training_data(file_path: Optional[str] = None) -> pd.DataFrame:
     """
     Loads the local raw credit dataset for model training.
 
@@ -24,23 +24,19 @@ def load_raw_training_data() -> pd.DataFrame:
         FileNotFoundError: If the raw data file does not exist at the configured path.
     """
     try:
-        df = pd.read_csv(RAW_DATA_FILE)
-        print(f"[LOADER] Raw trainning data loaded successfully. Shape: {df.shape}")
+        actual_path = file_path if file_path is not None else RAW_DATA_FILE
+        df = pd.read_csv(actual_path)
+        print(f"[LOADER] Raw training data loaded successfully. Shape: {df.shape}")
         return df
     except FileNotFoundError as e:
         print(
-            f"[ERROR] Could not find raw data at {RAW_DATA_FILE}. Please check data/raw/folder."
+            f"[ERROR] Could not find raw data at {actual_path}. Please check data/raw/folder."
         )
         raise e
 
 
 def split_train_val_test(
-    df: pd.DataFrame,
-    target_column: str,
-    train_size: float = 0.64,
-    val_size: float = 0.16,
-    test_size: float = 0.2,
-    random_state: int = 42,
+    df: pd.DataFrame, target_column: str, split_params: Dict[str, Any]
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits the training dataset into Train-train, Validation, and Test sets.
@@ -57,6 +53,12 @@ def split_train_val_test(
     Return:
         Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (df_train, df_val, df_test)
     """
+    test_size = split_params.get("test_size", 0.2)
+    val_size = split_params.get("val_size", 0.16)
+    random_state = split_params.get("random_state", 42)
+    should_stratify = split_params.get("stratify", True)
+    train_size = 1 - test_size - val_size
+
     # Quick sanity check on the ratios
     assert (
         abs((train_size + test_size + val_size) - 1.0) < 1e-9
@@ -65,9 +67,12 @@ def split_train_val_test(
     # Calculate the remaining ratio for validation after isolating the test set
     relative_val_size = val_size / (train_size + val_size)
 
-    # 1. First Split: Isolate the Test set using stratiify on the target column
-    df_train_val, def_test = train_test_split(
-        df, test_size=test_size, random_state=random_state, stratify=df[target_column]
+    # 1. First Split: Isolate the Test set using stratify on the target column
+    df_train_val, df_test = train_test_split(
+        df,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=df[target_column] if should_stratify else None,
     )  # Maintains class distribution in the Test set
 
     # 2. Second Split: Separate Train-train and Validation using stratify on target
@@ -75,16 +80,16 @@ def split_train_val_test(
         df_train_val,
         test_size=relative_val_size,
         random_state=random_state,
-        stratify=df_train_val[target_column],
+        stratify=df_train_val[target_column] if should_stratify else None,
     )  # Maintain class distribution in the Train/Val sets
 
     # Log information to verify the target distribution across all splits
     print(f"[LOADER] Stratified splitting finished:")
-    for name, dataset in [("Train", df_train), ("Val", df_val), ("Test", def_test)]:
+    for name, dataset in [("Train", df_train), ("Val", df_val), ("Test", df_test)]:
         ratio = dataset[target_column].value_counts(normalize=True).to_dict()
         print(f"    -{name} Set: {dataset.shape} | Target distribution: {ratio}")
 
-    return df_train, df_val, def_test
+    return df_train, df_val, df_test
 
 
 if __name__ == "__main__":
@@ -95,8 +100,15 @@ if __name__ == "__main__":
         # ASSUMPTION: Replace 'target' in this project: 'loan_status'
         TARGET_COL = "loan_status"
 
+        MOCK_PARAMS = {
+            "test_size": 0.2,
+            "val_size": 0.16,
+            "random_state": 42,
+            "stratify": True,
+        }
+
         train_set, val_set, test_set = split_train_val_test(
-            raw_data, target_column=TARGET_COL
+            raw_data, target_column=TARGET_COL, split_params=MOCK_PARAMS
         )
     except Exception as e:
         print(f"[TEST FAILED] Stopped by: {type(e).__name__}")
