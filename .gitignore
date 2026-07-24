@@ -48,6 +48,8 @@ data/**/*.csv
 # Block all serialized models and preprocessors (.pkl or .joblib)
 artifacts/**/*.pkl
 artifacts/**/*.joblib
+!demo_artifacts/
+!demo_artifacts/*.pkl
 
 # Block all generated evaluation metrics and reports across all dynamic MLOps runs
 artifacts/runs/**/metrics/
