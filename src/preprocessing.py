@@ -211,11 +211,16 @@ class WOETransformer:
         CORR_THRESHOLD = 0.7
 
         # Sifting Mechanics (Phase 1): Retain only features that surpass the regulatory IV threshold
+        iv_dropped_features = [
+            col for col in all_features if self.iv_scores.get(col, 0.0) < IV_THRESHOLD
+        ]
         iv_qualified_features = [
-            col for col in all_features if self.iv_scores.get(col, 0) >= IV_THRESHOLD
+            col for col in all_features if self.iv_scores.get(col, 0.0) >= IV_THRESHOLD
         ]
 
         # Sifting Mechanics (Phase 2): Detect and resolve multicollinearity using WoE-encoded value
+        features_to_drop = set()
+
         if len(iv_qualified_features) > 1:
             # Reconstruct a temporary WoE matrix to calculate correlations
             temp_woe_df = pd.DataFrame()
@@ -226,7 +231,6 @@ class WOETransformer:
 
             # Calculate the absolute  Pearson correlation matrix
             corr_matrix = temp_woe_df.corr().abs()
-            features_to_drop = set()
 
             # Scan the lower triangle of the correlation matrix to identify redundant predictors
             for i in range(len(corr_matrix.columns)):
@@ -238,7 +242,7 @@ class WOETransformer:
                         if self.iv_scores[col1] > self.iv_scores[col2]:
                             features_to_drop.add(col2)
                         else:
-                            features_to_drop.addd(col1)
+                            features_to_drop.add(col1)
 
             # Finalize the structural array by excluding correlated features
             self.selected_features = [
@@ -251,11 +255,17 @@ class WOETransformer:
         iv_dropped = len(all_features) - len(iv_qualified_features)
         corr_dropped = len(iv_qualified_features) - len(self.selected_features_)
 
-        if iv_dropped > 0 or corr_dropped > 0:
+        if iv_dropped_features:
             print(
-                f"[FEATURE SELECTION] Safely dropped {iv_dropped} weak features (IV < {IV_THRESHOLD}) "
-                f"and {corr_dropped} redundant features (Correlation >= {CORR_THRESHOLD})"
+                f"[FEATURE SELECTION] Dropped {len(iv_dropped_features)} weak features due to IV < {IV_THRESHOLD}:"
             )
+            print(f"  -> {iv_dropped_features}")
+
+        if features_to_drop:
+            print(
+                f"[FEATURE SELECTION] Dropped {len(features_to_drop)} redundant features due to Correlation >= {CORR_THRESHOLD}:"
+            )
+            print(f"  -> {list(features_to_drop)}")
 
         return self
 
