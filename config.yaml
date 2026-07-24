@@ -61,3 +61,8 @@ scorecard_scaling:
   base_score: 600 # Target benchmark score
   base_odds: 50.0 # Good-to-Bad ratio at the base score (50:1)
   pdo: 20 # Points to Double the Odds
+
+# 6. Business Decision Cutoff Thresholds (UI Decision Rules)
+scoring_thresholds:
+  approval_score: 650 # Score >= 650: Automatic Approval
+  review_score: 580 # 580 <= Score < 650: Manual Underwriter Review. Score < 580: Rejection
