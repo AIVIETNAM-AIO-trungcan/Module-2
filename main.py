@@ -90,6 +90,25 @@ def main() -> None:
     log_progress(
         3, TOTAL_STEPS, "Executing Stratified Data Split Segregation", start_time
     )
+
+    print("Validating Target Column ...")
+    if df_raw[TARGET_COL].isnull().any():
+        raise ValueError(
+            f"[DQ-01 FAILED] Target column '{TARGET_COL}' contains Null values."
+        )
+
+    unique_targets = set(df_raw[TARGET_COL].dropna().unique())
+    if unique_targets != {0, 1}:
+        raise ValueError(
+            f"[DQ-01 FAILED] Target column must be binary {{0, 1}}. Found: {unique_targets}"
+        )
+
+    if len(unique_targets) < 2:
+        raise ValueError(
+            "[DQ-01 FAILED] Target column has only one class. Cannot train model."
+        )
+    print("  -> Target validation passed: Binary {0, 1} confirmed.")
+
     split_params: Dict[str, Any] = config["data"]["split_params"]
 
     df_train: pd.DataFrame
@@ -100,13 +119,13 @@ def main() -> None:
     )
 
     # TARGET ISOLATION STRATEGY: Strip away loan_status immediately to block leakage
-    X_train: pd.DataFrame = df_train[NUM_COLS + CAT_COLS].copy()
+    X_train: pd.DataFrame = df_train.drop(columns=[TARGET_COL]).copy()
     y_train: pd.Series = df_train[TARGET_COL].copy()
 
-    X_val: pd.DataFrame = df_val[NUM_COLS + CAT_COLS].copy()
+    X_val: pd.DataFrame = df_val.drop(columns=[TARGET_COL]).copy()
     y_val: pd.Series = df_val[TARGET_COL].copy()
 
-    X_test: pd.DataFrame = df_test[NUM_COLS + CAT_COLS].copy()
+    X_test: pd.DataFrame = df_test.drop(columns=[TARGET_COL]).copy()
     y_test: pd.Series = df_test[TARGET_COL].copy()
 
     # --------------------------------------------------------------------------
@@ -122,14 +141,30 @@ def main() -> None:
     )
 
     # LEAKAGE SAFEGUARD: Fit parameters ONLY on training set, then transform others
+    global_mutation_log = []
+
     X_train_clean: pd.DataFrame = cleaner.fit_transform(X_train)
+    train_mutations = cleaner.audit_report_.get("mutation_details", [])
+    for mutation in train_mutations:
+        mutation["dataset_type"] = "train"
+    global_mutation_log.extend(train_mutations)
     y_train = y_train.loc[X_train_clean.index]
 
     X_val_clean: pd.DataFrame = cleaner.transform(X_val)
+    val_mutations = cleaner.audit_report_.get("mutation_details", [])
+    for mutation in val_mutations:
+        mutation["dataset_type"] = "validation"
+    global_mutation_log.extend(val_mutations)
     y_val = y_val.loc[X_val_clean.index]
 
     X_test_clean: pd.DataFrame = cleaner.transform(X_test)
+    test_mutations = cleaner.audit_report_.get("mutation_details", [])
+    for mutation in test_mutations:
+        mutation["dataset_type"] = "test"
+    global_mutation_log.extend(test_mutations)
     y_test = y_test.loc[X_test_clean.index]
+
+    cleaner.audit_report_["mutation_details"] = global_mutation_log
 
     # --------------------------------------------------------------------------
     # STEP 5: TIER-2 DYNAMIC WOE BINNING & ENCODING
@@ -257,6 +292,16 @@ def main() -> None:
     print(
         f"  -> Historical run data (WOE & Credit Score) locked inside: {current_run_dir}/data/"
     )
+
+    # Export Data Mutation Audit Log to CSV
+    mutation_log_data = cleaner.audit_report_.get("mutation_details", [])
+    if mutation_log_data:
+        df_mutation_log = pd.DataFrame(mutation_log_data)
+        mutation_log_path = current_run_dir / "tables" / "data_mutation_audit_log.csv"
+        df_mutation_log.to_csv(mutation_log_path, index=False)
+        print(f" Data Mutation Audit Log exported to: {mutation_log_path}")
+    else:
+        print("No data mutations logged. Original data was perfectly clean.")
 
     # Save training metrics rules & Scorecard Look-ups
     save_iv_scores(
