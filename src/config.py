@@ -26,6 +26,7 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+RUNS_DIR = ARTIFACTS_DIR / "runs"
 
 # 4. Define specific paths for data files and serialized models
 CONFIG_YAML_PATH = PROJECT_ROOT / "config.yaml"
