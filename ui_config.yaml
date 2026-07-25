@@ -1,0 +1,178 @@
+# ==============================================================================
+# CREDIT RISK SCORECARD ENGINE - USER INTERFACE CONFIGURATION
+# ==============================================================================
+# Description: Configuration schema for localization (i18n), layout parameters,
+#              currency rates, and UI mascot responses.
+# Maintainer : Group 05 - FinTech Innovation
+# ==============================================================================
+
+project_info:
+  title: "Credit Risk Scorecard Engine"
+  subtitle: "Automated Credit Risk Assessment & Scoring System"
+  team_name: "Group 05 - FinTech Innovation"
+  logo_path: "asset/images/team_logo.png"
+
+currency:
+  symbol_vnd: "VND"
+  symbol_usd: "USD"
+  usd_to_vnd_rate: 25000 # Exchange rate conversion factor: 1 USD = 25,000 VND
+  thousand_separator: "."
+  decimal_separator: ","
+
+mascot:
+  default_image: "asset/images/mascot_neutral.png"
+  outcomes:
+    APPROVED:
+      image: "asset/images/mascot_approved.png"
+      status_color: "#28a745"
+      dialogue:
+        vi: "🎉 Chúc mừng! Khoản vay của bạn đã được TỰ ĐỘNG PHÊ DUYỆT!"
+        en: "🎉 Congratulations! Your loan application is AUTOMATICALLY APPROVED!"
+    MANUAL_REVIEW:
+      image: "asset/images/mascot_review.png"
+      status_color: "#ffc107"
+      dialogue:
+        vi: "🧐 Hồ sơ của bạn cần được chuyên viên xem xét thêm nhé!"
+        en: "🧐 Your application requires further verification by a credit officer!"
+    REJECTED:
+      image: "asset/images/mascot_rejected.png"
+      status_color: "#dc3545"
+      dialogue:
+        vi: "😔 Rất tiếc, điểm tín dụng hiện tại chưa đủ điều kiện vay."
+        en: "😔 Unfortunately, your current credit risk profile exceeds our risk threshold."
+
+# ------------------------------------------------------------------------------
+# LOCALIZATION & INTERNATIONALIZATION (i18n)
+# ------------------------------------------------------------------------------
+i18n:
+  vi:
+    # Sidebar & Global Layout
+    app_title: "HỆ THỐNG ĐÁNH GIÁ VÀ CHẤM ĐIỂM TÍN DỤNG"
+    sidebar_header: "Bảng Điều Khiển"
+    system_status: "Trạng thái Engine"
+    active_model_run: "Mô hình đang chạy"
+    language_select: "🌐 Ngôn ngữ / Language"
+    single_tab: "👤 Chấm điểm Cá nhân"
+    batch_tab: "📁 Chấm điểm Hàng loạt (CSV)"
+
+    # Single Applicant Scoring (Tab 1)
+    applicant_info: "Thông tin Hồ sơ Khách hàng"
+    scoring_result: "Kết quả Đánh giá & Thẩm định"
+    waterfall_breakdown: "📊 Bóc tách Điểm số Chi tiết (Waterfall Chart)"
+    currency_select: "Đơn vị tiền tệ"
+    income_freq_select: "Chu kỳ thu nhập"
+    income_freq_monthly: "Theo tháng"
+    income_freq_yearly: "Theo năm"
+    income_label: "Thu nhập"
+    loan_amount_label: "Số tiền muốn vay"
+    person_age: "Tuổi khách hàng"
+    person_home_ownership: "Hình thức sở hữu nhà"
+    loan_intent: "Mục đích sử dụng khoản vay"
+    cb_person_cred_hist_length: "Thâm niên tín dụng (Năm)"
+    person_emp_length: "Thâm niên làm việc (Năm)"
+    loan_grade: "Xếp hạng khoản vay dự kiến"
+    cb_person_default_on_file: "Lịch sử nợ xấu/vỡ nợ"
+    loan_int_rate: "Lãi suất khoản vay (%/năm)"
+    score_label: "Điểm Tín dụng"
+    pd_label: "Xác suất Vỡ nợ (PD)"
+    decision_label: "Quyết định Thẩm định"
+    risk_band_label: "Phân hạng Rủi ro"
+    btn_predict: "🚀 Tiến hành Chấm điểm"
+
+    # Batch CSV Scoring (Tab 2)
+    batch_header: "📁 Chấm Điểm Tín Dụng Hàng Loạt (Tải lên CSV)"
+    batch_caption: "Tải lên tệp CSV chứa danh sách hồ sơ khách hàng để thực hiện đánh giá tự động và phân loại rủi ro hàng loạt."
+    download_template_btn: "📥 Tải File Mẫu CSV"
+    batch_currency_label: "💵 Đơn vị tiền tệ trong File CSV:"
+    batch_currency_vnd: "VND (Theo Tháng)"
+    batch_currency_usd: "USD (Theo Năm)"
+    uploader_label: "Kéo thả hoặc chọn tệp CSV hồ sơ khách hàng:"
+    uploader_help: "Lưu ý: Tệp CSV tải lên phải chứa đầy đủ các cột thuộc tính theo đúng định dạng file mẫu."
+    upload_success: "✅ Tải thành công **{count}** hồ sơ khách hàng."
+    preview_input_title: "🔍 Xem trước dữ liệu đầu vào (10 dòng đầu)"
+    btn_run_batch: "🚀 Chạy Đánh Giá Rủi Ro Hàng Loạt"
+    batch_spinner: "Đang tính toán điểm tín dụng và xác suất nợ xấu cho toàn bộ hồ sơ..."
+    batch_results_header: "📊 Kết Quả Đánh Giá Hàng Loạt"
+    metric_total: "Tổng số Hồ sơ"
+    metric_approved: "🟢 Tự động Duyệt"
+    metric_review: "🟡 Duyệt Thủ công"
+    metric_rejected: "🔴 Từ chối"
+    filter_label: "Lọc kết quả theo Quyết định Thẩm định:"
+    export_btn: "💾 Xuất Báo Cáo Kết Quả (.CSV)"
+    error_csv: "❌ Có lỗi xảy ra khi xử lý tệp CSV: {error}"
+
+  en:
+    # Sidebar & Global Layout
+    app_title: "CREDIT RISK SCORECARD INFERENCE SYSTEM"
+    sidebar_header: "Control Panel"
+    system_status: "Engine Diagnostics"
+    active_model_run: "Active Run"
+    language_select: "🌐 Language / Ngôn ngữ"
+    single_tab: "👤 Single Applicant"
+    batch_tab: "📁 Batch CSV Scoring"
+
+    # Single Applicant Scoring (Tab 1)
+    applicant_info: "Applicant Demographics"
+    scoring_result: "Assessment & Scoring Results"
+    waterfall_breakdown: "📊 Score Waterfall Breakdown"
+    currency_select: "Currency Unit"
+    income_freq_select: "Income Frequency"
+    income_freq_monthly: "Monthly"
+    income_freq_yearly: "Yearly"
+    income_label: "Income"
+    loan_amount_label: "Requested Loan Amount"
+    person_age: "Applicant Age"
+    person_home_ownership: "Home Ownership"
+    loan_intent: "Loan Intent"
+    cb_person_cred_hist_length: "Credit History Length (Years)"
+    person_emp_length: "Employment Length (Years)"
+    loan_grade: "Loan Grade"
+    cb_person_default_on_file: "Historical Default on File"
+    loan_int_rate: "Loan Interest Rate (%)"
+    score_label: "Credit Score"
+    pd_label: "Probability of Default (PD)"
+    decision_label: "Decision"
+    risk_band_label: "Risk Band"
+    btn_predict: "🚀 Calculate Credit Score"
+
+    # Batch CSV Scoring (Tab 2)
+    batch_header: "📁 Batch Applicant Scoring (CSV Upload)"
+    batch_caption: "Upload a CSV file containing applicant profiles to perform automated batch scoring and risk classification."
+    download_template_btn: "📥 Download CSV Template"
+    batch_currency_label: "💵 Currency Unit in CSV File:"
+    batch_currency_vnd: "VND (Monthly)"
+    batch_currency_usd: "USD (Yearly)"
+    uploader_label: "Drag and drop or select an applicant CSV file:"
+    uploader_help: "Note: The uploaded CSV file must contain all baseline feature attributes matching the template."
+    upload_success: "✅ Successfully loaded **{count}** applicant records."
+    preview_input_title: "🔍 Preview Input Data (First 10 Rows)"
+    btn_run_batch: "🚀 Run Batch Risk Assessment"
+    batch_spinner: "Computing credit scores and probabilities of default across batch records..."
+    batch_results_header: "📊 Batch Assessment Results"
+    metric_total: "Total Applicants"
+    metric_approved: "🟢 Auto-Approved"
+    metric_review: "🟡 Manual Review"
+    metric_rejected: "🔴 Rejected"
+    filter_label: "Filter results by Underwriting Decision:"
+    export_btn: "💾 Export Full Evaluation Report (.CSV)"
+    error_csv: "❌ An error occurred while processing the CSV file: {error}"
+
+# ------------------------------------------------------------------------------
+# CATEGORICAL FEATURE LOCALIZATION MAPPINGS
+# ------------------------------------------------------------------------------
+categorical_options:
+  person_home_ownership:
+    RENT: { vi: "Thuê nhà", en: "Rent" }
+    MORTGAGE: { vi: "Thế chấp", en: "Mortgage" }
+    OWN: { vi: "Sở hữu riêng", en: "Own" }
+    OTHER: { vi: "Khác", en: "Other" }
+  loan_intent:
+    PERSONAL: { vi: "Cá nhân", en: "Personal" }
+    EDUCATION: { vi: "Giáo dục", en: "Education" }
+    MEDICAL: { vi: "Y tế", en: "Medical" }
+    VENTURE: { vi: "Kinh doanh", en: "Venture" }
+    HOMEIMPROVEMENT: { vi: "Sửa nhà", en: "Home Improvement" }
+    DEBTCONSOLIDATION: { vi: "Gộp nợ", en: "Debt Consolidation" }
+  cb_person_default_on_file:
+    "N": { vi: "Chưa từng có nợ xấu", en: "No Default History" }
+    "Y": { vi: "Đã từng có nợ xấu", en: "Has Default History" }
