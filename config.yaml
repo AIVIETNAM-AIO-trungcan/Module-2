@@ -96,3 +96,14 @@ scorecard_scaling:
 scoring_thresholds:
   approval_score: 650 # Score >= 650: Automatic Approval
   review_score: 580 # 580 <= Score < 650: Manual Underwriter Review. Score < 580: Rejection
+
+# 9. Inference Engine & Model Deployment Settings
+# ------------------------------------------------------------------------------
+# Purpose: Controls how artifacts are loaded and evaluated during Streamlit / API execution.
+# Mode options:
+#   - "auto"   : Automatically selects the latest run directory inside the artifacts folder.
+#   - "manual" : Uses the explicit path provided in 'manual_run_dir'.
+# ------------------------------------------------------------------------------
+inference:
+  mode: "auto" # Execution mode: "auto" or "manual"
+  manual_run_dir: "2026-07-25_run_4" # Target folder name inside artifacts/runs/
