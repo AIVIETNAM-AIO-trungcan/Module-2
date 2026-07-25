@@ -8,7 +8,6 @@ interfaces. Refactored to fix URL downloading, type casting, and numeric operati
 from io import StringIO
 import os
 from pathlib import Path
-import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -16,13 +15,10 @@ import joblib
 import numpy as np
 import pandas as pd
 import yaml
+from huggingface_hub import hf_hub_download
 
 from src.config import CONFIG_YAML_PATH, RUNS_DIR
 from src.utils import extract_structural_bins
-
-DEFAULT_ARTIFACTS_ZIP_URL: str = (
-    "https://huggingface.co/datasets/trungcan94/AIO_moddule_2_model/raw/main/model.zip"
-)
 
 
 class CreditScorecardInferencePipeline:
@@ -87,46 +83,31 @@ class CreditScorecardInferencePipeline:
             )
 
     def _download_artifacts_from_cloud(self, target_models_dir: Path) -> None:
-        artifacts_url: str = self.config.get("inference", {}).get(
-            "artifacts_download_url", DEFAULT_ARTIFACTS_ZIP_URL
-        )
-
+        """Downloads serialized model artifacts ZIP from Hugging Face Hub safely."""
         target_models_dir.mkdir(parents=True, exist_ok=True)
-        zip_path: Path = target_models_dir / "artifacts_download.zip"
-
         print(
-            f"🌐 [CLOUD DOWNLOAD] Artifacts missing locally. Downloading from remote URL:\n👉 {artifacts_url}"
+            "🌐 [CLOUD DOWNLOAD] Artifacts missing. Downloading from Hugging Face Hub..."
         )
 
         try:
-            # Thêm User-Agent header tránh bị google/server chặn script download
-            req = urllib.request.Request(
-                artifacts_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            # Download file LFS zip trực tiếp từ Hugging Face Dataset
+            downloaded_zip_path = hf_hub_download(
+                repo_id="trungcan94/AIO_moddule_2_model",
+                filename="model.zip",
+                repo_type="dataset",
             )
-            with urllib.request.urlopen(req) as response, open(
-                zip_path, "wb"
-            ) as out_file:
-                out_file.write(response.read())
 
             print("📦 [CLOUD DOWNLOAD] Download completed. Extracting model files...")
 
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            # Extract ZIP content
+            with zipfile.ZipFile(downloaded_zip_path, "r") as zip_ref:
                 zip_ref.extractall(target_models_dir)
 
-            if zip_path.exists():
-                os.remove(zip_path)
-
-            print(
-                "✅ [CLOUD DOWNLOAD] Model artifacts successfully restored to local directory!"
-            )
+            print("✅ [CLOUD DOWNLOAD] Model artifacts successfully restored!")
 
         except Exception as e:
-            if zip_path.exists():
-                os.remove(zip_path)
             raise RuntimeError(
-                f"[CRITICAL] Failed to download/extract model artifacts from cloud storage. "
-                f"Ensure direct link is correct. Error: {e}"
+                f"[CRITICAL] Failed to download/extract model artifacts from Hugging Face. Error: {e}"
             )
 
     def _ensure_artifacts_exist(self) -> None:
@@ -188,7 +169,6 @@ class CreditScorecardInferencePipeline:
                 num = df[cols[0]].to_numpy(dtype=float)
                 denom = df[cols[1]].to_numpy(dtype=float)
 
-                # Tránh cảnh báo Zero Division
                 ratio = np.zeros_like(num)
                 valid_mask = denom > 0
                 ratio[valid_mask] = num[valid_mask] / denom[valid_mask]
@@ -251,7 +231,6 @@ class CreditScorecardInferencePipeline:
                 if col in points_map and isinstance(points_map[col], dict):
                     feature_map: Dict[str, int] = points_map[col]
 
-                    # Khắc phục khớp kiểu dữ liệu an toàn
                     if val_clean in feature_map:
                         points = feature_map[val_clean]
                     elif str(val_clean) in feature_map:

@@ -14,6 +14,7 @@ pyyaml>=6.0
 
 # Web Application UI
 streamlit>=1.25.0
+huggingface_hub>=0.20.0
 
 # Path Management & Utilities
 pathlib>=1.0.1
