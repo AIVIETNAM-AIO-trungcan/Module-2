@@ -107,9 +107,9 @@ def split_train_val_test(
 
     train_size = 1 - test_size - val_size
 
-    assert abs(train_size + val_size + test_size - 1.0) < 1e-9, (
-        "Split ratios must sum to 1.0."
-    )
+    assert (
+        abs(train_size + val_size + test_size - 1.0) < 1e-9
+    ), "Split ratios must sum to 1.0."
 
     relative_val_size = val_size / (train_size + val_size)
 
@@ -149,14 +149,10 @@ def split_train_val_test(
 if __name__ == "__main__":
     print("--- Executing Data Loader Module Independently ---")
 
-    TARGET_COLUMN = "loan_status"
+    from src.config import CONFIG
 
-    SPLIT_PARAMS = {
-        "test_size": 0.20,
-        "val_size": 0.16,
-        "random_state": 42,
-        "stratify": True,
-    }
+    TARGET_COLUMN = CONFIG["target"]
+    SPLIT_PARAMS = CONFIG["data"]["split_params"]
 
     try:
         raw_data = load_raw_training_data()
