@@ -15,13 +15,12 @@ data:
 
   split_params:
     test_size: 0.2 # Percent of data saved for final testing (20%)
-    val_size: 0.16 # Percent of data saved for validation (20%)
+    val_size: 0.16 # Percent of data saved for validation: 16% total data (equals 20% of remaining train data)
     random_state: 42 # Controls shuffling to ensure repeatable splits
     stratify: true # Keeps the balance of bad customers equal across splits
 
 # 2. Validate data
 validation:
-
   person_age:
     min: 18
     max: 99
@@ -44,14 +43,13 @@ validation:
 
 # 3. Compute new data
 derived_features:
-
   loan_percent_income_computed:
     columns:
       - loan_amnt
       - person_income
     precision: 4
 
-# 2. Define analytical feature groupings for the pipeline
+# 4. Define analytical feature groupings for the pipeline
 features:
   # Columns containing continious numbers to be cleaned and binned
   numerical:
@@ -78,23 +76,23 @@ features:
     person_emp_length: 4
     loan_amnt: 7
 
-# 3. Define target variable for model prediction
+# 5. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
 
-# 4. Define Hyperparameters for the baseline machine learning model
+# 6. Define Hyperparameters for the baseline machine learning model
 model:
   logistic_regression:
     random_state: 42
     max_iter: 100
     c_parameter: 1.0
 
-# 5. Scorecard Scaling Parameters (Financial Engineering Constants)
+# 7. Scorecard Scaling Parameters (Financial Engineering Constants)
 scorecard_scaling:
   base_score: 600 # Target benchmark score
   base_odds: 50.0 # Good-to-Bad ratio at the base score (50:1)
   pdo: 20 # Points to Double the Odds
 
-# 6. Business Decision Cutoff Thresholds (UI Decision Rules)
+# 8. Business Decision Cutoff Thresholds (UI Decision Rules)
 scoring_thresholds:
   approval_score: 650 # Score >= 650: Automatic Approval
   review_score: 580 # 580 <= Score < 650: Manual Underwriter Review. Score < 580: Rejection
