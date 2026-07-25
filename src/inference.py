@@ -21,7 +21,7 @@ from src.config import CONFIG_YAML_PATH, RUNS_DIR
 from src.utils import extract_structural_bins
 
 DEFAULT_ARTIFACTS_ZIP_URL: str = (
-    "https://huggingface.co/datasets/trungcan94/AIO_moddule_2_model/resolve/main/model.zip"
+    "https://huggingface.co/datasets/trungcan94/AIO_moddule_2_model/raw/main/model.zip"
 )
 
 
