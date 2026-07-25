@@ -1,433 +1,593 @@
-import streamlit as st
-import pandas as pd
-import joblib
-import os
-import glob
-import time
+"""
+Streamlit Credit Risk Scorecard Web Application.
 
-# 1. PAGE CONFIGURATION
+This module acts as the user interface layer for the Credit Scorecard System.
+It enables interactive single-applicant evaluation, batch CSV scoring, dynamic currency
+and income period conversions, Plotly-based score attribution breakdowns (Waterfall Chart),
+and underlying scorecard rule inspection.
+"""
+
+from io import StringIO
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Union
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yaml
+
+from src.inference import CreditScorecardInferencePipeline
+
+# ------------------------------------------------------------------------------
+# 1. PAGE CONFIGURATION & CACHING
+# ------------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Credit Risk Assessment System", page_icon="🏦", layout="wide"
+    page_title="Credit Risk Scorecard System",
+    page_icon="💳",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# 2. DICTIONARY FOR MULTI-LANGUAGE SUPPORT & PROFESSIONAL UI LABELS
-I18N = {
-    "VN": {
-        "title": "🏦 Hệ Thống Thẩm Định & Chấm Điểm Tín Dụng Tự Động",
-        "subtitle": "Cổng tiếp nhận và phân tích hồ sơ vay vốn tự động theo tiêu chuẩn quản trị rủi ro ngân hàng.",
-        "sidebar_title": "📋 Đăng Ký Hồ Sơ Vay Vốn",
-        "engine_label": "Phiên bản mô hình:",
-        "sec_personal": "👤 I. Thông Tin Cá Nhân & Tài Chính",
-        "sec_loan": "💳 II. Chi Tiết Khoản Vay & Tín Dụng",
-        # Field Labels & Helps
-        "age": "Độ tuổi người vay",
-        "age_help": "Độ tuổi hợp lệ từ 18 đến 100 tuổi.",
-        "income": "Thu nhập bình quân hàng năm ($)",
-        "income_help": "Tổng thu nhập trước thuế từ lương và các nguồn hợp pháp trong 1 năm.",
-        "emp_length": "Thâm niên làm việc (năm)",
-        "emp_length_help": "Tổng thời gian công tác tích lũy tại đơn vị hiện tại hoặc liên tục.",
-        "loan_amnt": "Số tiền đề nghị vay ($)",
-        "loan_amnt_help": "Tổng hạn mức tín dụng khách hàng muốn đăng ký vay.",
-        "loan_int_rate": "Lãi suất dự kiến (%/năm)",
-        "loan_int_rate_help": "Lãi suất áp dụng cho gói vay tương ứng.",
-        "cred_hist_len": "Thâm niên lịch sử tín dụng (năm)",
-        "cred_hist_len_help": "Số năm khách hàng bắt đầu mở tài khoản tín dụng/khoản vay đầu tiên.",
-        "home_ownership": "Hình thức sở hữu nhà ở",
-        "home_ownership_help": "Tình trạng pháp lý về nơi ở hiện tại của khách hàng.",
-        "loan_intent": "Mục đích sử dụng vốn vay",
-        "loan_intent_help": "Lĩnh vực hoặc nhu cầu tài chính thực tế cần giải ngân.",
-        "loan_grade": "Phân hạng rủi ro khoản vay",
-        "loan_grade_help": "Hạng tín dụng từ A (Rủi ro thấp nhất) đến G (Rủi ro cao nhất).",
-        "default_on_file": "Ghi nhận lịch sử quá hạn/vỡ nợ",
-        "default_on_file_help": "Khách hàng từng có nợ quá hạn hoặc ghi nhận vỡ nợ trên CIC hay chưa.",
-        # Buttons & Messages
-        "confirm_check": "Tôi xin cam đoan các thông tin kê khai trên là hoàn toàn chính xác và chịu trách nhiệm trước pháp luật.",
-        "submit_btn": "🚀 Gửi Hồ Sơ & Thẩm Định",
-        "guide_info": "👈 Vui lòng điền đầy đủ thông tin hồ sơ bên thanh Sidebar và nhấn **'Gửi Hồ Sơ & Thẩm Định'** để bắt đầu.",
-        "warn_confirm": "⚠️ Vui lòng đánh dấu xác nhận cam đoan thông tin chính xác trước khi gửi hồ sơ.",
-        "spinner_msg": "🔄 Hệ thống AI đang phân tích hồ sơ và tính toán xác suất vỡ nợ... Vui lòng đợi trong giây lát.",
-        "res_header": "📊 Kết Quả Thẩm Định Chi Tiết",
-        "kpi_score": "Điểm Tín Dụng (Credit Score)",
-        "kpi_pd": "Xác Suất Vỡ Nợ (PD)",
-        "kpi_ratio": "Tỷ lệ Vay / Thu nhập",
-        "dec_header": "🏆 Quyết Định Phê Duyệt Tín Dụng",
-        # Approval Scenarios
-        "approved_title": "✅ HỒ SƠ ĐƯỢC PHÊ DUYỆT TỰ ĐỘNG (APPROVED)",
-        "approved_msg": "Chúc mừng! Điểm tín dụng của bạn đạt mức **{score} điểm**. Khoản vay trị giá **${amount:,.0f}** đã được hệ thống tự động phê duyệt.",
-        "pending_title": "⚠️ HỒ SƠ CẦN THẨM ĐỊNH BỔ SUNG (PENDING REVIEW)",
-        "pending_msg": "Điểm tín dụng của bạn đạt mức **{score} điểm**. Để hoàn tất thủ tục giải ngân, bộ phận Quản trị Rủi ro cần xác minh thêm một số chứng từ.",
-        "contact_form_title": "**Vui lòng để lại thông tin để Chuyên viên Tín dụng liên hệ hỗ trợ trực tiếp:**",
-        "email_label": "Địa chỉ Email liên hệ",
-        "phone_label": "Số điện thoại di động",
-        "contact_btn": "Gửi Thông Tin Liên Hệ",
-        "contact_success": "✅ Đã ghi nhận thông tin! Chuyên viên thẩm định sẽ gọi hỗ trợ trong vòng 24 giờ làm việc.",
-        "contact_err": "Vui lòng nhập chính xác Email hoặc Số điện thoại.",
-        "rejected_title": "❌ RẤT TIẾC! HỒ SƠ CHƯA ĐẠT TIÊU CHUẨN (REJECTED)",
-        "rejected_msg": "Điểm tín dụng hiện tại (**{score} điểm**) chưa đạt ngưỡng an toàn tối thiểu theo quy định cấp tín dụng.",
-        "mascot_speech": "> *Chân thành xin lỗi quý khách! VietBank rất tiếc chưa thể hỗ trợ khoản vay lần này. Quý khách vui lòng duy trì lịch sử trả nợ tốt hoặc cập nhật thêm thu nhập và đăng ký lại sau 3 tháng nhé!*",
-        # Explainability
-        "explain_header": "💡 Giải Thích Ý Nghĩa Chỉ Số Đánh Giá",
-        "exp_score_title": "**1. Điểm Tín Dụng (Credit Score):**",
-        "exp_score_desc": "- **Thang điểm:** Từ 300 đến 850 điểm.\n- **Ý nghĩa:** Chỉ số tổng hợp phản ánh mức độ uy tín tài chính. Điểm càng cao, năng lực trả nợ càng tốt.\n- **Phương pháp:** Quy đổi theo công thức chuẩn hóa Scorecard ngân hàng dựa trên trọng số rủi ro ($WOE \\times \\beta$).",
-        "exp_pd_title": "**2. Xác Suất Vỡ Nợ (Probability of Default - PD):**",
-        "exp_pd_desc": "- **Mức PD dự báo:** **{pd:.2f}%**\n- **Ý nghĩa:** Tỷ lệ rủi ro dự kiến khách hàng phát sinh nợ quá hạn quá 90 ngày trong 12 tháng tới.\n- **Ứng dụng:** Là cơ sở để phân hạng rủi ro và trích lập dự phòng theo chuẩn Basel II/III.",
-        "rule_expander": "🔍 Bảng Quy Định Phân Hạng Rủi Ro & Hành Động (Risk Matrix)",
-        "tbl_col1": "Khung Điểm (Score)",
-        "tbl_col2": "Phân Hạng Rủi Ro",
-        "tbl_col3": "Quyết Định Thẩm Định",
-        "tbl_col4": "Quy Trình Xử Lý",
-    },
-    "EN": {
-        "title": "🏦 Automated Credit Risk Assessment & Scoring System",
-        "subtitle": "Automated credit application intake and analysis portal fully compliant with banking risk standards.",
-        "sidebar_title": "📋 Credit Application Form",
-        "engine_label": "Active Model Run:",
-        "sec_personal": "👤 I. Personal & Financial Profile",
-        "sec_loan": "💳 II. Loan Request & Credit Details",
-        # Field Labels & Helps
-        "age": "Applicant Age",
-        "age_help": "Valid age range between 18 and 100 years old.",
-        "income": "Annual Gross Income ($)",
-        "income_help": "Total yearly pre-tax income from salaried employment and verified sources.",
-        "emp_length": "Employment Tenure (years)",
-        "emp_length_help": "Total accumulated length of employment at the current organization.",
-        "loan_amnt": "Requested Loan Amount ($)",
-        "loan_amnt_help": "The total credit limit requested by the applicant.",
-        "loan_int_rate": "Expected Interest Rate (%/yr)",
-        "loan_int_rate_help": "Applicable annual interest rate for the requested loan package.",
-        "cred_hist_len": "Credit History Length (years)",
-        "cred_hist_len_help": "Years since the applicant opened their first credit account or loan.",
-        "home_ownership": "Home Ownership Status",
-        "home_ownership_help": "Residential legal status of the applicant.",
-        "loan_intent": "Purpose of Loan",
-        "loan_intent_help": "Primary financial intent or sector for fund disbursement.",
-        "loan_grade": "Loan Risk Grade",
-        "loan_grade_help": "Risk rating from A (Lowest Risk) to G (Highest Risk).",
-        "default_on_file": "Historical Default Record",
-        "default_on_file_help": "Whether the applicant has a past delinquency or default record on credit bureau.",
-        # Buttons & Messages
-        "confirm_check": "I hereby certify that all provided disclosures are accurate and true to the best of my knowledge.",
-        "submit_btn": "🚀 Submit Application & Assess",
-        "guide_info": "👈 Please complete the application form in the Sidebar and click **'Submit Application & Assess'** to begin.",
-        "warn_confirm": "⚠️ Please mark the confirmation checkbox before submitting your application.",
-        "spinner_msg": "🔄 AI engine is evaluating application parameters and calculating default probability... Please wait.",
-        "res_header": "📊 Comprehensive Assessment Results",
-        "kpi_score": "Credit Score",
-        "kpi_pd": "Probability of Default (PD)",
-        "kpi_ratio": "Loan-to-Income Ratio",
-        "dec_header": "🏆 Credit Underwriting Decision",
-        # Approval Scenarios
-        "approved_title": "✅ AUTOMATICALLY APPROVED",
-        "approved_msg": "Congratulations! Your credit score reached **{score} points**. Your loan application of **${amount:,.0f}** has been automatically approved.",
-        "pending_title": "⚠️ MANUAL REVIEW REQUIRED (PENDING REVIEW)",
-        "pending_msg": "Your credit score stands at **{score} points**. To complete disbursement, Risk Management requires verifying additional documentation.",
-        "contact_form_title": "**Please leave your contact details for a Credit Officer to follow up directly:**",
-        "email_label": "Contact Email Address",
-        "phone_label": "Mobile Phone Number",
-        "contact_btn": "Submit Contact Details",
-        "contact_success": "✅ Information recorded! A credit specialist will contact you within 24 business hours.",
-        "contact_err": "Please enter a valid Email address or Phone number.",
-        "rejected_title": "❌ APPLICATION REJECTED",
-        "rejected_msg": "Your current credit score (**{score} points**) does not meet the bank's minimum safety threshold for credit extension.",
-        "mascot_speech": "> *Sincere apologies! VietBank regrets that we cannot proceed with this loan request. Please maintain a healthy credit history or update your income and re-apply in 3 months!*",
-        # Explainability
-        "explain_header": "💡 Detailed Metric Interpretations",
-        "exp_score_title": "**1. Credit Score:**",
-        "exp_score_desc": "- **Scale:** Ranging from 300 to 850 points.\n- **Meaning:** Composite indicator of financial trustworthiness. Higher scores signify stronger repayment capacity.\n- **Methodology:** Converted using standard banking Scorecard mathematical scaling ($WOE \\times \\beta$).",
-        "exp_pd_title": "**2. Probability of Default (PD):**",
-        "exp_pd_desc": "- **Predicted PD:** **{pd:.2f}%**\n- **Meaning:** Expected probability of 90+ days delinquency over the next 12 months.\n- **Application:** Serves as the core foundation for risk grading and Basel II/III provisioning.",
-        "rule_expander": "🔍 View Risk Matrix Rules & System Actions",
-        "tbl_col1": "Score Range",
-        "tbl_col2": "Risk Grade",
-        "tbl_col3": "Underwriting Decision",
-        "tbl_col4": "System Process",
-    },
-}
 
+@st.cache_data
+def load_ui_config() -> Dict[str, Any]:
+    """Loads and caches user interface localization and layout configurations.
 
-# 3. AUTOMATIC PIPELINE LOADING FROM LATEST RUN
-def get_latest_run_dir(base_dir="artifacts/runs"):
-    if not os.path.exists(base_dir):
-        raise FileNotFoundError(f"Directory {base_dir} does not exist.")
-    subdirs = glob.glob(f"{base_dir}/*/")
-    if not subdirs:
-        raise FileNotFoundError("No model run artifacts found.")
-    return max(subdirs, key=os.path.getmtime)
+    Returns:
+        Dict[str, Any]: Parsed YAML configuration mapping for the UI layout.
+
+    Raises:
+        FileNotFoundError: Intercepted via UI alert if ui_config.yaml is missing.
+    """
+    cfg_path: Path = Path("ui_config.yaml")
+    if not cfg_path.exists():
+        st.error(f"[CRITICAL] Missing UI config file at: {cfg_path.resolve()}")
+        st.stop()
+
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 @st.cache_resource
-def load_pipelines():
-    base_dir = "demo_artifacts"
+def get_inference_engine() -> CreditScorecardInferencePipeline:
+    """Instantiates and caches the core inference pipeline engine in memory.
 
-    cleaner = joblib.load(os.path.join(base_dir, "cleaner.pkl"))
-    woe_tf = joblib.load(os.path.join(base_dir, "woe_transformer.pkl"))
-    model = joblib.load(os.path.join(base_dir, "baseline_logistic_model.pkl"))
-    scaler = joblib.load(os.path.join(base_dir, "score_scaler.pkl"))
-    return cleaner, woe_tf, model, scaler, base_dir
+    Returns:
+        CreditScorecardInferencePipeline: Loaded model pipeline ready for scoring.
+    """
+    return CreditScorecardInferencePipeline()
 
 
-try:
-    cleaner, woe_transformer, model_trainer, score_scaler, active_run_dir = (
-        load_pipelines()
-    )
-except Exception as e:
-    st.error(
-        f"⚠️ System initialization error: {e}\nPlease re-run main.py to create model artifacts."
-    )
-    st.stop()
+# Global initialization
+ui_cfg: Dict[str, Any] = load_ui_config()
+pipeline: CreditScorecardInferencePipeline = get_inference_engine()
 
-# 4. SIDEBAR PANEL: LANGUAGE SWITCHER, LOGO & PROFESSIONAL FORM
-with st.sidebar:
-    # 4.1 LANGUAGE SWITCHER
-    lang_choice = st.radio(
-        "🌐 Language / Ngôn ngữ", ["🇻🇳 Tiếng Việt", "🇬🇧 English"], horizontal=True
-    )
-    lang = "VN" if "Tiếng Việt" in lang_choice else "EN"
-    txt = I18N[lang]
 
-    st.markdown("---")
-    st.image("https://cdn-icons-png.flaticon.com/512/2830/2830284.png", width=70)
-    st.title("VIETBANK CREDIT RISK")
-    st.caption(
-        f"{txt['engine_label']} {os.path.basename(os.path.normpath(active_run_dir))}"
-    )
-    st.markdown("---")
+# ------------------------------------------------------------------------------
+# 2. HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
+def format_money(amount: float, curr_unit: str) -> str:
+    """Formats monetary values according to currency selection and locale settings.
 
-    st.subheader(txt["sidebar_title"])
+    Args:
+        amount (float): Raw numeric monetary value.
+        curr_unit (str): Target currency code ('VND' or 'USD').
 
-    # 4.2 PROFESSIONAL INPUT FORM WITH TOOLTIPS
-    with st.form("customer_input_form"):
-        st.markdown(txt["sec_personal"])
-        age = st.number_input(
-            txt["age"], min_value=18, max_value=100, value=28, help=txt["age_help"]
-        )
-        income = st.number_input(
-            txt["income"], min_value=0, value=65000, step=1000, help=txt["income_help"]
-        )
-        emp_length = st.number_input(
-            txt["emp_length"],
-            min_value=0.0,
-            max_value=50.0,
-            value=4.0,
-            step=0.5,
-            help=txt["emp_length_help"],
-        )
-        home_ownership = st.selectbox(
-            txt["home_ownership"],
-            ["RENT", "MORTGAGE", "OWN", "OTHER"],
-            help=txt["home_ownership_help"],
-        )
-
-        st.markdown(txt["sec_loan"])
-        loan_amnt = st.number_input(
-            txt["loan_amnt"],
-            min_value=500,
-            value=10000,
-            step=500,
-            help=txt["loan_amnt_help"],
-        )
-        loan_int_rate = st.number_input(
-            txt["loan_int_rate"],
-            min_value=0.0,
-            max_value=40.0,
-            value=11.0,
-            step=0.5,
-            help=txt["loan_int_rate_help"],
-        )
-        loan_intent = st.selectbox(
-            txt["loan_intent"],
-            [
-                "PERSONAL",
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "HOMEIMPROVEMENT",
-                "DEBTCONSOLIDATION",
-            ],
-            help=txt["loan_intent_help"],
-        )
-        loan_grade = st.selectbox(
-            txt["loan_grade"],
-            ["A", "B", "C", "D", "E", "F", "G"],
-            help=txt["loan_grade_help"],
-        )
-        cred_hist_length = st.number_input(
-            txt["cred_hist_len"],
-            min_value=0,
-            max_value=50,
-            value=5,
-            help=txt["cred_hist_len_help"],
-        )
-        default_on_file = st.selectbox(
-            txt["default_on_file"], ["N", "Y"], help=txt["default_on_file_help"]
-        )
-
-        st.markdown("---")
-        confirm_checkbox = st.checkbox(txt["confirm_check"])
-        submit_button = st.form_submit_button(
-            label=txt["submit_btn"], use_container_width=True
-        )
-
-# 5. MAIN INTERFACE PANEL
-st.title(txt["title"])
-st.markdown(txt["subtitle"])
-
-if not submit_button:
-    st.info(txt["guide_info"])
-else:
-    if not confirm_checkbox:
-        st.warning(txt["warn_confirm"])
+    Returns:
+        str: Formatted monetary string with localized thousand separators and suffixes.
+    """
+    if curr_unit == "VND":
+        thousand_sep: str = ui_cfg["currency"].get("thousand_separator", ".")
+        formatted_str: str = f"{amount:,.0f}".replace(",", thousand_sep)
+        return f"{formatted_str} VND"
     else:
-        # 5.1 LOADING SPINNER EFFECT
-        with st.spinner(txt["spinner_msg"]):
-            time.sleep(1.2)  # Simulate AI inference latency
+        return f"${amount:,.2f} USD"
 
-            # Compute loan-to-income ratio
-            loan_percent_income = round(loan_amnt / income, 2) if income > 0 else 0.0
 
-            # Construct COMPLETE Input DataFrame matching model expectations
-            input_df = pd.DataFrame(
-                [
-                    {
-                        "person_age": age,
-                        "person_income": income,
-                        "person_emp_length": emp_length,
-                        "loan_amnt": loan_amnt,
-                        "loan_int_rate": loan_int_rate,
-                        "loan_percent_income": loan_percent_income,
-                        "cb_person_cred_hist_length": cred_hist_length,
-                        "person_home_ownership": home_ownership,
-                        "loan_intent": loan_intent,
-                        "loan_grade": loan_grade,
-                        "cb_person_default_on_file": default_on_file,
-                    }
-                ]
+def render_waterfall_chart(score_breakdown: Dict[str, int], title: str) -> None:
+    """Renders an interactive Plotly Waterfall Chart displaying feature point contributions.
+
+    Args:
+        score_breakdown (Dict[str, int]): Map of feature names to integer scaled points.
+        title (str): Display title for the chart widget.
+    """
+    features: List[str] = list(score_breakdown.keys())
+    values: List[int] = [int(v) for v in score_breakdown.values()]
+    total_score: int = sum(values)
+
+    # Append absolute sum total bar at the right end of chart
+    x_data: List[str] = features + ["TOTAL SCORE"]
+    y_data: List[int] = values + [total_score]
+    measures: List[str] = ["relative"] * len(features) + ["total"]
+    text_labels: List[str] = [f"{v:+d}" if v != 0 else "0" for v in values] + [
+        f"{total_score} pts"
+    ]
+
+    fig: go.Figure = go.Figure(
+        go.Waterfall(
+            name="Credit Score Attribution",
+            orientation="v",
+            measure=measures,
+            x=x_data,
+            y=y_data,
+            text=text_labels,
+            textposition="outside",
+            connector={"line": {"color": "#6c757d", "width": 1.5}},
+            decreasing={"marker": {"color": "#dc3545"}},
+            increasing={"marker": {"color": "#28a745"}},
+            totals={"marker": {"color": "#0d6efd"}},
+        )
+    )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Features",
+        yaxis_title="Points Contribution",
+        waterfallgap=0.2,
+        height=500,
+        margin=dict(l=20, r=20, t=50, b=80),
+        xaxis=dict(tickangle=-30),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ------------------------------------------------------------------------------
+# 3. SIDEBAR NAVIGATION & CONFIGURATION
+# ------------------------------------------------------------------------------
+with st.sidebar:
+    st.title(ui_cfg["project_info"]["title"])
+    st.caption(f"🚀 **{ui_cfg['project_info']['team_name']}**")
+
+    logo_path: Path = Path(ui_cfg["project_info"]["logo_path"])
+    if logo_path.exists():
+        st.image(str(logo_path), use_container_width=True)
+
+    st.divider()
+
+    lang: str = st.selectbox(
+        ui_cfg["i18n"]["en"]["language_select"],
+        options=["vi", "en"],
+        format_func=lambda x: "Tiếng Việt 🇻🇳" if x == "vi" else "English 🇬🇧",
+        index=0,
+    )
+    t: Dict[str, Any] = ui_cfg["i18n"][lang]
+
+    st.divider()
+    st.markdown(f"**🔧 {t['system_status']}**")
+    st.info(f"**{t['active_model_run']}:**\n`{pipeline.active_run_dir.name}`")
+
+# ------------------------------------------------------------------------------
+# 4. MAIN INTERFACE LAYOUT
+# ------------------------------------------------------------------------------
+st.title(t["app_title"])
+st.caption(ui_cfg["project_info"]["subtitle"])
+
+tab_single, tab_batch = st.tabs([t["single_tab"], t["batch_tab"]])
+
+# ==============================================================================
+# TAB 1: SINGLE APPLICANT EVALUATION
+# ==============================================================================
+with tab_single:
+    st.subheader(t["applicant_info"])
+
+    # Currency and income cycle selection controls
+    cfg_col1, cfg_col2 = st.columns(2)
+    with cfg_col1:
+        currency_unit: str = st.radio(
+            f"💵 {t['currency_select']}",
+            options=["VND", "USD"],
+            horizontal=True,
+            index=0,
+            key="currency_unit_selector",
+        )
+    with cfg_col2:
+        income_freq: str = st.radio(
+            f"📅 {t['income_freq_select']}",
+            options=["monthly", "yearly"],
+            format_func=lambda x: (
+                t["income_freq_monthly"] if x == "monthly" else t["income_freq_yearly"]
+            ),
+            horizontal=True,
+            index=0,
+            key="income_freq_selector",
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    with st.form("single_scoring_form"):
+        col1, col2, col3 = st.columns(3)
+
+        # Reactive defaults and step increments bound to active currency selection
+        default_income: int = 25000000 if currency_unit == "VND" else 1000
+        default_loan: int = 50000000 if currency_unit == "VND" else 2000
+        step_income: int = 1000000 if currency_unit == "VND" else 100
+        step_loan: int = 5000000 if currency_unit == "VND" else 500
+
+        freq_label: str = (
+            t["income_freq_monthly"]
+            if income_freq == "monthly"
+            else t["income_freq_yearly"]
+        )
+
+        with col1:
+            person_age: int = st.number_input(
+                t["person_age"], min_value=18, max_value=100, value=30
             )
 
-            # Pipeline Transformations
-            X_clean = cleaner.transform(input_df)
-            X_woe = woe_transformer.transform(X_clean)
+            home_opts: List[str] = list(
+                ui_cfg["categorical_options"]["person_home_ownership"].keys()
+            )
+            person_home_ownership: str = st.selectbox(
+                t["person_home_ownership"],
+                options=home_opts,
+                format_func=lambda x: ui_cfg["categorical_options"][
+                    "person_home_ownership"
+                ][x][lang],
+            )
 
-            from src.utils import extract_structural_bins
+            person_emp_length: float = st.number_input(
+                t["person_emp_length"],
+                min_value=0.0,
+                max_value=60.0,
+                value=3.0,
+                step=0.5,
+            )
 
-            X_bins = extract_structural_bins(X_clean, woe_transformer)
+        with col2:
+            income_input: float = st.number_input(
+                f"{t['income_label']} ({freq_label} - {currency_unit})",
+                min_value=0,
+                value=default_income,
+                step=step_income,
+            )
+            st.caption(
+                f"👉 **{format_money(income_input, currency_unit)} / {freq_label.lower()}**"
+            )
 
-            pd_prob = model_trainer.predict_probability(X_woe)[0]
-            credit_score = int(score_scaler.transform(X_bins).iloc[0])
+            intent_opts: List[str] = list(
+                ui_cfg["categorical_options"]["loan_intent"].keys()
+            )
+            loan_intent: str = st.selectbox(
+                t["loan_intent"],
+                options=intent_opts,
+                format_func=lambda x: ui_cfg["categorical_options"]["loan_intent"][x][
+                    lang
+                ],
+            )
 
-        # 5.2 RENDER METRICS & DECISIONS
-        st.markdown("---")
-        st.subheader(txt["res_header"])
+            loan_grade: str = st.selectbox(
+                t["loan_grade"], options=["A", "B", "C", "D", "E", "F", "G"], index=1
+            )
 
-        col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
-        col_kpi1.metric(txt["kpi_score"], f"{credit_score} pts")
-        col_kpi2.metric(txt["kpi_pd"], f"{pd_prob * 100:.2f}%")
-        col_kpi3.metric(txt["kpi_ratio"], f"{loan_percent_income * 100:.1f}%")
+        with col3:
+            loan_amt_input: float = st.number_input(
+                f"{t['loan_amount_label']} ({currency_unit})",
+                min_value=0,
+                value=default_loan,
+                step=step_loan,
+            )
+            st.caption(f"👉 **{format_money(loan_amt_input, currency_unit)}**")
 
-        st.markdown(f"### {txt['dec_header']}")
+            cb_person_cred_hist_length: int = st.number_input(
+                t["cb_person_cred_hist_length"], min_value=0, max_value=50, value=5
+            )
 
-        # 5.3 THREE-TIER APPROVAL SCENARIOS
-        if credit_score >= 650:
-            st.balloons()
-            st.success(f"### {txt['approved_title']}")
-            st.write(txt["approved_msg"].format(score=credit_score, amount=loan_amnt))
+            cb_default_opts: List[str] = list(
+                ui_cfg["categorical_options"]["cb_person_default_on_file"].keys()
+            )
+            cb_person_default_on_file: str = st.selectbox(
+                t["cb_person_default_on_file"],
+                options=cb_default_opts,
+                format_func=lambda x: ui_cfg["categorical_options"][
+                    "cb_person_default_on_file"
+                ][x][lang],
+            )
 
-        elif 580 <= credit_score < 650:
-            st.warning(f"### {txt['pending_title']}")
-            st.write(txt["pending_msg"].format(score=credit_score))
+            loan_int_rate: float = st.number_input(
+                t["loan_int_rate"], min_value=1.0, max_value=40.0, value=11.0, step=0.1
+            )
 
-            with st.form("contact_form"):
-                st.markdown(txt["contact_form_title"])
-                c_col1, c_col2 = st.columns(2)
-                user_email = c_col1.text_input(
-                    txt["email_label"], placeholder="name@example.com"
-                )
-                user_phone = c_col2.text_input(
-                    txt["phone_label"], placeholder="+84 901 234 567"
-                )
+        submit_btn: bool = st.form_submit_button(
+            t["btn_predict"], type="primary", use_container_width=True
+        )
 
-                submit_contact = st.form_submit_button(txt["contact_btn"])
-                if submit_contact:
-                    if user_email or user_phone:
-                        st.success(txt["contact_success"])
-                    else:
-                        st.error(txt["contact_err"])
+    # Submission Handler & Evaluation Logic
+    if submit_btn:
+        usd_rate: float = ui_cfg["currency"].get("usd_to_vnd_rate", 25000.0)
 
+        # 🧮 Step 1: Normalize Income to Annual USD Standard
+        if income_freq == "monthly":
+            annual_income_raw: float = income_input * 12.0
         else:
-            st.error(f"### {txt['rejected_title']}")
-            st.write(txt["rejected_msg"].format(score=credit_score))
+            annual_income_raw: float = float(income_input)
 
-            mascot_col1, mascot_col2 = st.columns([1, 3])
-            with mascot_col1:
-                st.image(
-                    "https://cdn-icons-png.flaticon.com/512/4076/4076549.png", width=120
+        if currency_unit == "VND":
+            person_income_usd: float = annual_income_raw / usd_rate
+        else:
+            person_income_usd: float = annual_income_raw
+
+        # 🧮 Step 2: Normalize Requested Loan Amount to USD
+        if currency_unit == "VND":
+            loan_amnt_usd: float = loan_amt_input / usd_rate
+        else:
+            loan_amnt_usd: float = float(loan_amt_input)
+
+        # 🧮 Step 3: Calculate Derived Feature (Debt-to-Income / Loan Percent Income)
+        loan_percent_income: float = (
+            loan_amnt_usd / person_income_usd if person_income_usd > 0 else 0.0
+        )
+
+        # 📦 Step 4: Construct Input DataFrame for Model Inference
+        input_data: pd.DataFrame = pd.DataFrame(
+            [
+                {
+                    "person_age": person_age,
+                    "person_income": person_income_usd,
+                    "person_home_ownership": person_home_ownership,
+                    "person_emp_length": person_emp_length,
+                    "loan_intent": loan_intent,
+                    "loan_grade": loan_grade,
+                    "loan_amnt": loan_amnt_usd,
+                    "loan_int_rate": loan_int_rate,
+                    "loan_percent_income_computed": loan_percent_income,
+                    "cb_person_default_on_file": cb_person_default_on_file,
+                    "cb_person_cred_hist_length": cb_person_cred_hist_length,
+                }
+            ]
+        )
+
+        try:
+            with st.spinner("Processing prediction..."):
+                result: Dict[str, Any] = pipeline.predict(input_data)
+
+            st.divider()
+
+            # ==================================================================
+            # 1. EVALUATION RESULTS DISPLAY
+            # ==================================================================
+            st.subheader(t["scoring_result"])
+
+            decision: str = result["decision"]
+            score: int = result["credit_score"]
+            pd_val: float = result["probability_of_default"]
+            risk_band: str = result["risk_band"]
+
+            outcome_cfg: Dict[str, Any] = ui_cfg["mascot"]["outcomes"].get(decision, {})
+            mascot_img: str = outcome_cfg.get(
+                "image", ui_cfg["mascot"]["default_image"]
+            )
+            dialogue: str = outcome_cfg.get("dialogue", {}).get(lang, "")
+            status_color: str = outcome_cfg.get("status_color", "#6c757d")
+
+            res_col1, res_col2 = st.columns([1, 2.5])
+
+            with res_col1:
+                if Path(mascot_img).exists():
+                    st.image(mascot_img, use_container_width=True)
+                else:
+                    st.info("🤖 [Mascot Image]")
+
+            with res_col2:
+                st.chat_message("assistant").write(f"**{dialogue}**")
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric(t["score_label"], f"{score} pts")
+                m2.metric(t["pd_label"], f"{pd_val * 100:.2f}%")
+                m3.metric(t["risk_band_label"], risk_band)
+
+                st.markdown(
+                    f"""
+                    <div style="background-color: {status_color}; color: white; padding: 12px; border-radius: 8px; text-align: center; font-size: 20px; font-weight: bold; margin-top: 10px;">
+                        {t['decision_label']}: {decision}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-            with mascot_col2:
-                st.markdown(txt["mascot_speech"])
 
-        # 5.4 EXPLAINABILITY SECTION
-        st.markdown("---")
-        st.subheader(txt["explain_header"])
+            st.divider()
 
-        exp_col1, exp_col2 = st.columns(2)
-
-        with exp_col1:
-            st.markdown(txt["exp_score_title"])
-            st.write(txt["exp_score_desc"])
-
-        with exp_col2:
-            st.markdown(txt["exp_pd_title"])
-            st.write(txt["exp_pd_desc"].format(pd=pd_prob * 100))
-
-        # Risk Matrix Lookup Rules Table
-        with st.expander(txt["rule_expander"]):
-            if lang == "VN":
-                st.table(
-                    pd.DataFrame(
-                        {
-                            txt["tbl_col1"]: [
-                                "Score >= 650",
-                                "580 <= Score < 650",
-                                "Score < 580",
-                            ],
-                            txt["tbl_col2"]: [
-                                "Thấp (Low Risk)",
-                                "Trung bình (Medium Risk)",
-                                "Cao (High Risk)",
-                            ],
-                            txt["tbl_col3"]: [
-                                "✅ Phê duyệt ngay",
-                                "⚠️ Yêu cầu thẩm định bổ sung",
-                                "❌ Từ chối hồ sơ",
-                            ],
-                            txt["tbl_col4"]: [
-                                "Tự động cấp hạn mức tối đa",
-                                "Gửi thông tin cho Chuyên viên Tín dụng",
-                                "Hiển thị linh vật xin lỗi",
-                            ],
-                        }
-                    )
-                )
+            # ==================================================================
+            # 2. WATERFALL SCORE ATTRIBUTION CHART
+            # ==================================================================
+            score_breakdown: Dict[str, int] = result.get("score_breakdown", {})
+            if score_breakdown:
+                render_waterfall_chart(score_breakdown, t["waterfall_breakdown"])
             else:
-                st.table(
-                    pd.DataFrame(
-                        {
-                            txt["tbl_col1"]: [
-                                "Score >= 650",
-                                "580 <= Score < 650",
-                                "Score < 580",
-                            ],
-                            txt["tbl_col2"]: ["Low Risk", "Medium Risk", "High Risk"],
-                            txt["tbl_col3"]: [
-                                "✅ Instant Approval",
-                                "⚠️ Manual Review Required",
-                                "❌ Application Rejected",
-                            ],
-                            txt["tbl_col4"]: [
-                                "Issue Maximum Limit",
-                                "Collect Contact Details for Credit Officer",
-                                "Display Apology Mascot",
-                            ],
-                        }
-                    )
+                st.warning(
+                    "⚠️ Unable to render Waterfall Chart due to missing breakdown data."
                 )
+
+            # ==================================================================
+            # 3. SCORECARD RULEBOOK LOOKUP TABLE
+            # ==================================================================
+            with st.expander(
+                "📊 Scorecard Lookup Table & Scaling Factors", expanded=False
+            ):
+                scaler: Any = pipeline.score_scaler
+
+                if hasattr(scaler, "scorecard_table"):
+                    raw_table_str: Any = getattr(scaler, "scorecard_table")
+                    if isinstance(raw_table_str, str):
+                        df_scorecard: pd.DataFrame = pd.read_csv(
+                            StringIO(raw_table_str), sep=r"\s+", engine="python"
+                        )
+                        st.dataframe(df_scorecard, use_container_width=True)
+                    elif isinstance(raw_table_str, pd.DataFrame):
+                        st.dataframe(raw_table_str, use_container_width=True)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Base Score", getattr(scaler, "base_score", 600))
+                c2.metric("Base Odds", getattr(scaler, "base_odds", 50))
+                c3.metric("PDO", getattr(scaler, "pdo", 20))
+                c4.metric(
+                    "Factor / Offset",
+                    f"{getattr(scaler, 'factor', 0):.2f} / {getattr(scaler, 'offset', 0):.2f}",
+                )
+
+        except Exception as e:
+            st.error(f"❌ Execution Error: {e}")
+
+# ==============================================================================
+# TAB 2: BATCH APPLICANT SCORING (CSV FILE EVALUATION)
+# ==============================================================================
+with tab_batch:
+    st.subheader(t["batch_header"])
+    st.caption(t["batch_caption"])
+
+    # 1. Provide reference CSV template for download
+    sample_df: pd.DataFrame = pd.DataFrame(
+        [
+            {
+                "person_age": 30,
+                "person_income": 25000000,
+                "person_home_ownership": "RENT",
+                "person_emp_length": 3.0,
+                "loan_intent": "PERSONAL",
+                "loan_grade": "B",
+                "loan_amnt": 50000000,
+                "loan_int_rate": 11.5,
+                "cb_person_default_on_file": "N",
+                "cb_person_cred_hist_length": 4,
+            },
+            {
+                "person_age": 45,
+                "person_income": 80000000,
+                "person_home_ownership": "OWN",
+                "person_emp_length": 10.0,
+                "loan_intent": "VENTURE",
+                "loan_grade": "A",
+                "loan_amnt": 100000000,
+                "loan_int_rate": 7.5,
+                "cb_person_default_on_file": "N",
+                "cb_person_cred_hist_length": 12,
+            },
+        ]
+    )
+
+    col_batch_cfg1, col_batch_cfg2 = st.columns([2, 1])
+    with col_batch_cfg2:
+        csv_template: bytes = sample_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label=t["download_template_btn"],
+            data=csv_template,
+            file_name="credit_scorecard_batch_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # 2. Currency unit selector for batch dataset
+    with col_batch_cfg1:
+        batch_currency: str = st.radio(
+            t["batch_currency_label"],
+            options=["VND", "USD"],
+            format_func=lambda x: (
+                t["batch_currency_vnd"] if x == "VND" else t["batch_currency_usd"]
+            ),
+            horizontal=True,
+            index=0,
+            key="batch_currency_selector",
+        )
+
+    # 3. CSV File Upload Widget
+    uploaded_file: Any = st.file_uploader(
+        t["uploader_label"],
+        type=["csv"],
+        help=t["uploader_help"],
+    )
+
+    if uploaded_file is not None:
+        try:
+            # Parse uploaded CSV file
+            raw_batch_df: pd.DataFrame = pd.read_csv(uploaded_file)
+            st.success(t["upload_success"].format(count=len(raw_batch_df)))
+
+            with st.expander(t["preview_input_title"], expanded=False):
+                st.dataframe(raw_batch_df.head(10), use_container_width=True)
+
+            # Trigger batch scoring pipeline execution
+            if st.button(
+                t["btn_run_batch"],
+                type="primary",
+                use_container_width=True,
+            ):
+                usd_rate: float = ui_cfg["currency"].get("usd_to_vnd_rate", 25000.0)
+                batch_input: pd.DataFrame = raw_batch_df.copy()
+
+                # Normalize monetary inputs to USD/Year standard if input is in VND/Monthly
+                if batch_currency == "VND":
+                    batch_input["person_income"] = (
+                        batch_input["person_income"] * 12.0
+                    ) / usd_rate
+                    batch_input["loan_amnt"] = batch_input["loan_amnt"] / usd_rate
+
+                with st.spinner(t["batch_spinner"]):
+                    # Execute prediction pipeline over dataframe
+                    batch_results: pd.DataFrame = pipeline.predict(batch_input)
+
+                st.divider()
+                st.subheader(t["batch_results_header"])
+
+                # Overall Batch Summary Metrics
+                total_records: int = len(batch_results)
+                approved_cnt: int = int((batch_results["decision"] == "APPROVED").sum())
+                review_cnt: int = int(
+                    (batch_results["decision"] == "MANUAL_REVIEW").sum()
+                )
+                rejected_cnt: int = int((batch_results["decision"] == "REJECTED").sum())
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric(t["metric_total"], f"{total_records}")
+                m2.metric(
+                    t["metric_approved"],
+                    f"{approved_cnt} ({approved_cnt/total_records:.1%})",
+                )
+                m3.metric(
+                    t["metric_review"],
+                    f"{review_cnt} ({review_cnt/total_records:.1%})",
+                )
+                m4.metric(
+                    t["metric_rejected"],
+                    f"{rejected_cnt} ({rejected_cnt/total_records:.1%})",
+                )
+
+                # Multiselect Decision Filter Widget
+                filter_decision: List[str] = st.multiselect(
+                    t["filter_label"],
+                    options=["APPROVED", "MANUAL_REVIEW", "REJECTED"],
+                    default=["APPROVED", "MANUAL_REVIEW", "REJECTED"],
+                )
+
+                filtered_df: pd.DataFrame = batch_results[
+                    batch_results["decision"].isin(filter_decision)
+                ]
+
+                # Display Results Dataframe
+                display_cols: List[str] = [
+                    "credit_score",
+                    "probability_of_default",
+                    "decision",
+                    "risk_band",
+                    "person_age",
+                    "person_income",
+                    "loan_amnt",
+                ]
+                # Fallback in case optional metadata columns are omitted
+                available_cols: List[str] = [
+                    col for col in display_cols if col in filtered_df.columns
+                ]
+                st.dataframe(filtered_df[available_cols], use_container_width=True)
+
+                # Export Batch Results to CSV
+                result_csv: bytes = batch_results.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=t["export_btn"],
+                    data=result_csv,
+                    file_name="credit_scoring_batch_results.csv",
+                    mime="text/csv",
+                    type="primary",
+                )
+
+        except Exception as e:
+            st.error(t["error_csv"].format(error=e))
