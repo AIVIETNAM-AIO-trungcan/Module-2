@@ -1,0 +1,47 @@
+- **DQ-01 - Target chưa được validate binary và single-class**
+  - Đã bổ sung hàm `validate_target()` trong `data_loader.py`.
+  - Kiểm tra cột target có tồn tại.
+  - Kiểm tra target không chứa giá trị null.
+  - Kiểm tra target chỉ chứa hai lớp `{0, 1}`.
+  - Kiểm tra target không rơi vào trường hợp chỉ có một lớp.
+  - Ghi log số lượng mẫu (class count) và tỷ lệ phân bố (class distribution) của Train/Validation/Test sau khi chia dữ liệu.
+
+- **DQ-02 - Drop row không có audit log/reason code**
+  - ❌ Chưa thực hiện.
+  - Nguyên nhân:
+    - `CreditDataCleaner` được thiết kế với mục tiêu tiền xử lý dữ liệu phục vụ huấn luyện mô hình, không phải hệ thống quản trị dữ liệu (Data Governance).
+    - Pipeline hiện tại chỉ trả về `clean_df` để phục vụ các bước Feature Engineering và Modeling.
+    - Việc sinh `quality_report`, `rejected_df`, `reason_code`, `rule_version`, `timestamp`, `input_hash` sẽ làm thay đổi giao diện của toàn bộ pipeline.
+    - Các quy tắc làm sạch đều mang tính xác định (deterministic), do đó cùng một đầu vào luôn tạo ra cùng một tập dữ liệu đầu ra.
+    - Chức năng audit và lineage ở mức từng dòng được xem là hướng phát triển cho môi trường production.
+
+- **DQ-03 - Range validation không nhất quán**
+  - Đã đưa toàn bộ ngưỡng kiểm tra dữ liệu về `config.yaml`.
+  - `config.py` đọc toàn bộ giá trị từ `config.yaml` và xuất thành các hằng số dùng chung.
+  - `CreditDataCleaner` sử dụng trực tiếp các hằng số này để kiểm tra:
+    - `AGE_MIN`, `AGE_MAX`
+    - `INCOME_MIN`
+    - `EMP_LENGTH_MIN`, `EMP_LENGTH_MAX`
+    - `LOAN_AMOUNT_MIN`
+    - `INTEREST_RATE_MIN`
+    - `CREDIT_HISTORY_MIN`
+  - Không còn hard-code các giá trị validation trong module preprocessing.
+  - ⚠️ Việc đồng bộ hoàn toàn với giao diện người dùng (`app.py`) nằm ngoài phạm vi phụ trách của nhóm xử lý dữ liệu.
+
+- **DQ-04 - Categorical chỉ fill null, chưa normalize/unknown policy**
+  - Đã chuẩn hóa toàn bộ giá trị categorical bằng:
+    - `str.strip()`
+    - `str.upper()`
+  - Điền giá trị thiếu bằng `"Missing"`.
+  - Giảm rủi ro phát sinh nhiều biểu diễn khác nhau của cùng một category (ví dụ: `Rent`, `rent`, ` RENT `).
+  - ❌ Không xây dựng allow-list cho từng category.
+  - ❌ Không tạo Unknown/OOT bin trong `CreditDataCleaner`.
+  - Nguyên nhân:
+    - Dataset sử dụng là bộ dữ liệu cố định cho nghiên cứu, không phải hệ thống production tiếp nhận dữ liệu từ nhiều nguồn.
+    - Việc quản lý Unknown/OOT phù hợp hơn với tầng Encoding (WOE Transformer) hoặc hệ thống scoring production thay vì tầng Data Cleaning.
+    - Mục tiêu của `CreditDataCleaner` là làm sạch dữ liệu đầu vào, không thực hiện các chính sách nghiệp vụ (business validation).
+
+- **Kiểm tra Duplicate sau Cleaning**
+  - Đã kiểm tra lại bằng `DataFrame.duplicated()`.
+  - Kết quả không còn bất kỳ full duplicate nào trong `df_clean`.
+  - ⚠️ Không thể tái hiện kết quả "157 full duplicate" như trong báo cáo QA.

@@ -10,94 +10,147 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
 
+from .config import (
+    AGE_MIN,
+    AGE_MAX,
+    INCOME_MIN,
+    EMP_LENGTH_MIN,
+    EMP_LENGTH_MAX,
+    LOAN_AMOUNT_MIN,
+    INTEREST_RATE_MIN,
+    CREDIT_HISTORY_MIN,
+)
+
 # TIER 1: DATA CLEANER
-
-
 class CreditDataCleaner:
     """
-    Step 1: Cleans the data by filling missing values with explicit risk flags.
+    Step 1: Cleans the raw credit dataset by removing invalid records,
+    standardizing categorical values, creating derived features,
+    and handling missing values.
     """
 
     def __init__(
-        self, numerical_features: List[str], categorical_features: List[str]
+        self,
+        numerical_features: List[str],
+        categorical_features: List[str],
     ) -> None:
         """
-        Initializes the clenaer with the lists of columns to process.
+        Initialize the cleaner.
 
         Args:
-            numerical_features (List[str]):  List of column names containing number.
-            categorical_features (List[str]): List of the culumn names containing text.
+            numerical_features (List[str]):
+                List of numerical feature names.
+
+            categorical_features (List[str]):
+                List of categorical feature names.
         """
         self.numerical_features = numerical_features
         self.categorical_features = categorical_features
 
     def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self,
+        X: pd.DataFrame,
+        y: Optional[pd.Series] = None,
     ) -> "CreditDataCleaner":
         """
-        Since we use fixed constants (-1.0 and 'Missing'), there is nothing to learn from the data
-        This function exists to maintain a standard pipeline structure.
-
-        Args:
-            X (pd.DataFrame): Training data
-            y (pd.Series, optional): Target labels.
-
-        Returns:
-            CreditDataCleaner: The instance itself
+        Nothing is learned because all cleaning rules are predefined.
         """
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Fills missing values in the provided dataset.
+        Clean the dataset.
 
         Args:
-            X (pd.DataFrame): The raw input dataframe.
+            X (pd.DataFrame):
+                Raw input dataframe.
 
         Returns:
-            pd.DataFrame: A clean dataframe with invalid, duplicate, and missing values handled.
+            pd.DataFrame:
+                Cleaned dataframe.
         """
-        X_clean: pd.DataFrame = X.copy()
+        X_clean = X.copy()
 
         # Remove duplicate records
         X_clean = X_clean.drop_duplicates()
 
-        # Remove invalid records
+        # Standardize categorical values
+        categorical_to_standardize = [
+            "person_home_ownership",
+            "loan_intent",
+            "loan_grade",
+            "cb_person_default_on_file",
+        ]
+
+        for column in categorical_to_standardize:
+            if column in X_clean.columns:
+                X_clean[column] = X_clean[column].str.strip().str.upper()
+
+        # Remove invalid age values
         if "person_age" in X_clean.columns:
-            X_clean = X_clean[X_clean["person_age"] < 100]
+            X_clean = X_clean[X_clean["person_age"].between(AGE_MIN, AGE_MAX)]
 
+        # Remove invalid income values
+        if "person_income" in X_clean.columns:
+            X_clean = X_clean[X_clean["person_income"] >= INCOME_MIN]
+
+        # Remove invalid employment length values
         if "person_emp_length" in X_clean.columns:
-            X_clean = X_clean[X_clean["person_emp_length"] < 100]
+            X_clean = X_clean[X_clean["person_emp_length"].between(EMP_LENGTH_MIN, EMP_LENGTH_MAX)]
 
-        # Fill missing numerical values with -1.0
+        # Remove invalid loan amount values
+        if "loan_amnt" in X_clean.columns:
+            X_clean = X_clean[X_clean["loan_amnt"] >= LOAN_AMOUNT_MIN]
+
+        # Remove invalid interest rate values
+        if "loan_int_rate" in X_clean.columns:
+            X_clean = X_clean[X_clean["loan_int_rate"] >= INTEREST_RATE_MIN]
+
+        # Remove invalid credit history values
+        if "cb_person_cred_hist_length" in X_clean.columns:
+            X_clean = X_clean[X_clean["cb_person_cred_hist_length"] >= CREDIT_HISTORY_MIN]
+
+        # Recompute loan percentage of income
+        if {"loan_amnt", "person_income"}.issubset(X_clean.columns):
+            X_clean["computed_loan_pct_income"] = (
+                X_clean["loan_amnt"] / X_clean["person_income"].replace(0, np.nan)
+            ).round(4)
+
+        # Remove original loan percentage feature
+        X_clean = X_clean.drop(columns=["loan_percent_income"], errors="ignore")
+
+        # Fill missing numerical values
         if self.numerical_features:
-            X_clean[self.numerical_features] = X_clean[self.numerical_features].fillna(
-                -1.0
-            )
+            numerical_columns = [col for col in self.numerical_features if col in X_clean.columns]
+            X_clean[numerical_columns] = X_clean[numerical_columns].fillna(-1.0)
 
-        # Fill missing categorical values with "Missing"
+        # Fill missing categorical values
         if self.categorical_features:
-            X_clean[self.categorical_features] = X_clean[
-                self.categorical_features
-            ].fillna("Missing")
+            categorical_columns = [col for col in self.categorical_features if col in X_clean.columns]
+            X_clean[categorical_columns] = X_clean[categorical_columns].fillna("Missing")
 
         return X_clean
 
     def fit_transform(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+        self,
+        X: pd.DataFrame,
+        y: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """
-        Combines fit() and transform()
+        Fit and transform the dataset.
 
         Args:
-            X (pd.DataFrame): Training data
-            y (pd.Series, optional): Target labels.
+            X (pd.DataFrame):
+                Training data.
+
+            y (Optional[pd.Series]):
+                Target labels.
 
         Returns:
-            pd.DataFrame: A clean dataframe.
+            pd.DataFrame:
+                Cleaned dataframe.
         """
-        self.fit(X, y)
-        return self.transform(X)
+        return self.fit(X, y).transform(X)
 
 
 # TIER 2: WOE TRANSFORMER

@@ -19,6 +19,38 @@ data:
     random_state: 42 # Controls shuffling to ensure repeatable splits
     stratify: true # Keeps the balance of bad customers equal across splits
 
+# 2. Validate data
+validation:
+
+  person_age:
+    min: 18
+    max: 99
+
+  person_income:
+    min: 1
+
+  person_emp_length:
+    min: 0
+    max: 99
+
+  loan_amnt:
+    min: 1
+
+  loan_int_rate:
+    min: 0
+
+  cb_person_cred_hist_length:
+    min: 0
+
+# 3. Compute new data
+derived_features:
+
+  loan_percent_income_computed:
+    columns:
+      - loan_amnt
+      - person_income
+    precision: 4
+
 # 2. Define analytical feature groupings for the pipeline
 features:
   # Columns containing continious numbers to be cleaned and binned
@@ -28,7 +60,7 @@ features:
     - "person_emp_length"
     - "loan_amnt"
     - "loan_int_rate"
-    - "loan_percent_income"
+    - "loan_percent_income_computed"
     - "cb_person_cred_hist_length"
 
   # Column containing text categories to be cleaned and mapped to WoE
@@ -38,7 +70,7 @@ features:
     - "cb_person_default_on_file"
     - "loan_grade"
 
-    # Dynamic bin counts for optimal binning
+  # Dynamic bin counts for optimal binning
   bin_config:
     default_bins: 5
     person_age: 5

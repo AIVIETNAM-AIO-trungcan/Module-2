@@ -2,11 +2,13 @@
 Project Configuration Module
 ----------------------------
 Purpose:
-    This module acts as the central path manager for the entire Module 2: Credit Scoring project.
-    This uses Python's 'pathlib' library to dunamically compute absolute paths base on relative  positions.
+    This module centralizes project paths and loads configuration values
+    from the project's config.yaml file. It exposes commonly used paths
+    and validation parameters for use throughout the pipeline.
 
 Usages:
-    Import path variables directly into other scripts (e.g., 'from src.config import RAW_DATA_FILE').
+    Import configuration variables directly into other modules
+    (e.g., 'from src.config import RAW_DATA_FILE, AGE_MIN').
 """
 
 import pathlib
@@ -29,14 +31,30 @@ ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 CONFIG_YAML_PATH = PROJECT_ROOT / "config.yaml"
 
 with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
-    pipeline_config = yaml.safe_load(f)
+    CONFIG = yaml.safe_load(f)
 
-RAW_FILE_NAME = pipeline_config["data"]["raw_file_name"]
+RAW_FILE_NAME = CONFIG["data"]["raw_file_name"]
 
 RAW_DATA_FILE = RAW_DATA_DIR / RAW_FILE_NAME
 
+# 5. Numerical Validation Rules
 
-# Safety Check: Automatically  create directories if they do not exist
+AGE_MIN = CONFIG["validation"]["person_age"]["min"]
+AGE_MAX = CONFIG["validation"]["person_age"]["max"]
+
+INCOME_MIN = CONFIG["validation"]["person_income"]["min"]
+
+EMP_LENGTH_MIN = CONFIG["validation"]["person_emp_length"]["min"]
+EMP_LENGTH_MAX = CONFIG["validation"]["person_emp_length"]["max"]
+
+LOAN_AMOUNT_MIN = CONFIG["validation"]["loan_amnt"]["min"]
+
+INTEREST_RATE_MIN = CONFIG["validation"]["loan_int_rate"]["min"]
+
+CREDIT_HISTORY_MIN = CONFIG["validation"]["cb_person_cred_hist_length"]["min"]
+
+
+# Safety Check: Automatically create directories if they do not exist
 for path in [
     RAW_DATA_DIR,
     PROCESSED_DATA_DIR,
