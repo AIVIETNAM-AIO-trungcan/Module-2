@@ -94,8 +94,8 @@ scorecard_scaling:
 
 # 8. Business Decision Cutoff Thresholds (UI Decision Rules)
 scoring_thresholds:
-  approval_score: 650 # Score >= 650: Automatic Approval
-  review_score: 580 # 580 <= Score < 650: Manual Underwriter Review. Score < 580: Rejection
+  approval_score: 600 # Score >= 600: Automatic Approval
+  review_score: 500 # 500 <= Score < 600: Manual Underwriter Review. Score < 580: Rejection
 
 # 9. Inference Engine & Model Deployment Settings
 # ------------------------------------------------------------------------------
