@@ -107,3 +107,4 @@ scoring_thresholds:
 inference:
   mode: "auto" # Execution mode: "auto" or "manual"
   manual_run_dir: "2026-07-25_run_4" # Target folder name inside artifacts/runs/
+  artifacts_download_url: "https://drive.google.com/file/d/1ehjHmTRkjIJmlXotQRsGc8-u5JpqEb5_"
