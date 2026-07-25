@@ -112,7 +112,7 @@ class CreditDataCleaner:
 
         # Recompute loan percentage of income
         if {"loan_amnt", "person_income"}.issubset(X_clean.columns):
-            X_clean["computed_loan_pct_income"] = (
+            X_clean["loan_percent_income_computed"] = (
                 X_clean["loan_amnt"] / X_clean["person_income"].replace(0, np.nan)
             ).round(4)
 
