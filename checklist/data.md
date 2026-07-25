@@ -8,6 +8,8 @@
 
 - **DQ-02 - Drop row không có audit log/reason code**
   - ❌ Chưa thực hiện.
+  * 2026/07/25 DTC: Tạm thời thay đổi logic drop, biến đổi các outliers thành NaN và xử lý như missing value, chưa xóa trực tiếp
+  * 2026/07/25 DTC: Đã cập nhật thêm audit và log nếu thay đổi data (outliers)
   - Nguyên nhân:
     - `CreditDataCleaner` được thiết kế với mục tiêu tiền xử lý dữ liệu phục vụ huấn luyện mô hình, không phải hệ thống quản trị dữ liệu (Data Governance).
     - Pipeline hiện tại chỉ trả về `clean_df` để phục vụ các bước Feature Engineering và Modeling.
@@ -33,7 +35,7 @@
     - `str.strip()`
     - `str.upper()`
   - Điền giá trị thiếu bằng `"Missing"`.
-  - Giảm rủi ro phát sinh nhiều biểu diễn khác nhau của cùng một category (ví dụ: `Rent`, `rent`, ` RENT `).
+  - Giảm rủi ro phát sinh nhiều biểu diễn khác nhau của cùng một category (ví dụ: `Rent`, `rent`, `RENT`).
   - ❌ Không xây dựng allow-list cho từng category.
   - ❌ Không tạo Unknown/OOT bin trong `CreditDataCleaner`.
   - Nguyên nhân:
