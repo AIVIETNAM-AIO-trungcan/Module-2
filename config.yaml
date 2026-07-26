@@ -96,6 +96,12 @@ features:
     random_state: 42
     # Add variables here to force exclude them (e.g., ["loan_grade", "loan_int_rate"] for pre-decision context)
     business_exclude: []
+    # LASSO config
+    lasso_max_iter: 10000
+    lasso_solver: "saga"
+    # penalty; l1_ratio (only for elasticnet)
+    penalty: "l1"
+    l1_ratio: 1.0
 
 # 5. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
@@ -104,7 +110,7 @@ target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
 model:
   logistic_regression:
     random_state: 42
-    max_iter: 100
+    max_iter: 1000
     c_parameter: 1.0
 
 # 7. Scorecard Scaling Parameters (Financial Engineering Constants)
