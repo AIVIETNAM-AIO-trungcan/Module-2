@@ -68,13 +68,34 @@ features:
     - "cb_person_default_on_file"
     - "loan_grade"
 
-  # Dynamic bin counts for optimal binning
+  # Dynamic bin counts and OptBinning configurations
   bin_config:
+    prebinning_method: "cart"
+    solver: "cp"
+    divergence: "iv"
+    max_n_prebins: 20
+    min_prebin_size: 0.05
+    max_n_bins: 6
+    monotonic_trend: "auto"
+    # Manual overrides for specific columns
     default_bins: 5
     person_age: 5
     person_income: 5
     person_emp_length: 4
     loan_amnt: 7
+
+  # Settings for WOE validation and diagnostics
+  woe_diagnostics:
+    small_bin_threshold: 0.05
+    extreme_woe_threshold: 2.0
+
+  # Feature selection rules (IV screening & LASSO)
+  selection_config:
+    iv_threshold: 0.02
+    lasso_cv_splits: 10
+    random_state: 42
+    # Add variables here to force exclude them (e.g., ["loan_grade", "loan_int_rate"] for pre-decision context)
+    business_exclude: []
 
 # 5. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
