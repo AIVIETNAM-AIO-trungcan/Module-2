@@ -2,8 +2,8 @@
 Preprocessing Pipeline for Credit Scoring
 -----------------------------------------
 This module splits the preprocessing into 2 separate steps:
-1. CreditDataCleaner: Standardizes values, handles outliers, and imputes missing values
-   dynamically based on validation rules from config.yaml.
+1. CreditDataCleaner: Standardizes values, handles extreme outliers (Z-score/IQR),
+   and imputes missing values dynamically based on validation rules from config.yaml.
 2. WOETransformer: Powered by `optbinning` for optimal monotonic binning, WOE encoding,
    and strict mathematical integrity validation (auto-diagnostics).
 
@@ -51,8 +51,8 @@ from optbinning import OptimalBinning
 # ==============================================================================
 class CreditDataCleaner:
     """
-    Step 1: Cleans the raw credit dataset by removing invalid records,
-    standardizing categorical values, creating derived features,
+    Step 1: Cleans the raw credit dataset by dropping extreme outliers mathematically,
+    removing invalid business records, standardizing categorical values,
     and handling missing values dynamically based on config.yaml.
     """
 
@@ -68,7 +68,7 @@ class CreditDataCleaner:
         Args:
             numerical_features (List[str]): List of numerical feature column names.
             categorical_features (List[str]): List of categorical feature column names.
-            cleaning_config (Dict[str, Any]): Dictionary containing min/max boundary validation rules.
+            cleaning_config (Dict[str, Any]): Dictionary containing outlier config and boundary validation rules.
         """
         self.numerical_features: List[str] = numerical_features.copy()
         self.categorical_features: List[str] = categorical_features.copy()
@@ -97,13 +97,13 @@ class CreditDataCleaner:
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Cleans the dataset using dynamic boundaries and logs out-of-bound mutations.
+        Cleans the dataset using statistical outlier dropping and dynamic business boundaries.
 
         Args:
             X (pd.DataFrame): Raw input DataFrame.
 
         Returns:
-            pd.DataFrame: A fully cleaned and imputed DataFrame.
+            pd.DataFrame: A fully cleaned and imputed DataFrame. The index might be shorter if outliers were dropped.
         """
         X_clean = X.copy()
         total_records = len(X_clean)
@@ -112,6 +112,58 @@ class CreditDataCleaner:
         reason_codes: Dict[str, int] = {}
         mutation_audit_log: List[Dict[str, Any]] = []
 
+        # ======================================================================
+        # 1. STATISTICAL OUTLIER DROPPING (Z-SCORE / IQR)
+        # ======================================================================
+        outlier_config = self.cleaning_config.get("outlier_handling", {})
+        dropped_outliers_count = 0
+        dropped_outliers_ratio = 0.0
+
+        if (
+            outlier_config.get("enabled", False)
+            and outlier_config.get("strategy") == "drop"
+        ):
+            method = outlier_config.get("method", "zscore")
+            target_cols = outlier_config.get("target_columns", [])
+            z_thresh = outlier_config.get("zscore_threshold", 3.0)
+            iqr_mult = outlier_config.get("iqr_multiplier", 3.0)
+
+            indices_to_drop = set()
+
+            for col in target_cols:
+                if col in X_clean.columns:
+                    series = X_clean[col].dropna()
+
+                    if method == "zscore":
+                        mean_val = series.mean()
+                        std_val = series.std()
+                        if std_val > 0:
+                            z_scores = np.abs((series - mean_val) / std_val)
+                            outlier_idx = series[z_scores > z_thresh].index
+                            indices_to_drop.update(outlier_idx.tolist())
+
+                    elif method == "iqr":
+                        q1 = series.quantile(0.25)
+                        q3 = series.quantile(0.75)
+                        iqr_val = q3 - q1
+                        lower_bound = q1 - iqr_mult * iqr_val
+                        upper_bound = q3 + iqr_mult * iqr_val
+                        outlier_idx = series[
+                            (series < lower_bound) | (series > upper_bound)
+                        ].index
+                        indices_to_drop.update(outlier_idx.tolist())
+
+            if indices_to_drop:
+                dropped_outliers_count = len(indices_to_drop)
+                dropped_outliers_ratio = (dropped_outliers_count / total_records) * 100
+                reason_codes[f"DROPPED_OUTLIERS_{method.upper()}"] = (
+                    dropped_outliers_count
+                )
+                X_clean = X_clean.drop(index=list(indices_to_drop))
+
+        # ======================================================================
+        # 2. BUSINESS LOGICAL BOUNDARY VALIDATION
+        # ======================================================================
         # Extract dynamic validation boundaries from config
         AGE_MIN = self.cleaning_config.get("person_age", {}).get("min", 18)
         AGE_MAX = self.cleaning_config.get("person_age", {}).get("max", 100)
@@ -146,7 +198,7 @@ class CreditDataCleaner:
                     )
                 )
 
-        # [ROW PRESERVATION FIX & MUTATION LOGGING]: Assign invalid values to NaN, but log them first
+        # [MUTATION LOGGING]: Assign invalid business logic values to NaN
         if "person_age" in X_clean.columns:
             invalid_age_mask = (
                 ~X_clean["person_age"].between(AGE_MIN, AGE_MAX)
@@ -290,6 +342,9 @@ class CreditDataCleaner:
         # Save audit registry
         self.audit_report_ = {
             "total_input_records": total_records,
+            "final_records": len(X_clean),
+            "outliers_dropped_count": dropped_outliers_count,
+            "outliers_dropped_ratio": dropped_outliers_ratio,
             "reason_codes_flagged": reason_codes,
             "missing_values_imputed": missing_counts,
             "mutation_details": mutation_audit_log,
@@ -309,12 +364,26 @@ class CreditDataCleaner:
             f"[DATA QUALITY AUDIT] Total Population Evaluated: {self.audit_report_['total_input_records']} rows"
         )
 
+        # Log dropped outliers rationale
+        drop_count = self.audit_report_.get("outliers_dropped_count", 0)
+        drop_ratio = self.audit_report_.get("outliers_dropped_ratio", 0.0)
+        if drop_count > 0:
+            print(
+                f"  -> [STATISTICAL CLEANING] Permanently dropped {drop_count} extreme outlier records "
+                f"({drop_ratio:.4f}% of total data) to preserve risk monotonicity."
+            )
+
         flags = self.audit_report_.get("reason_codes_flagged", {})
         if any(v > 0 for v in flags.values()):
-            print("  -> Flagged Invalid Outliers (Converted to NaN):")
+            print("  -> Flagged Anomalies & Violations:")
             for code, count in flags.items():
                 if count > 0:
-                    print(f"     * [{code}]: {count} records")
+                    action = (
+                        "Permanently Dropped"
+                        if "DROPPED" in code
+                        else "Converted to NaN"
+                    )
+                    print(f"     * [{code}]: {count} records ({action})")
 
         mutation_log = self.audit_report_.get("mutation_details", [])
         if mutation_log:
@@ -622,247 +691,3 @@ class WOETransformer:
         """
         self.fit(X, y)
         return self.transform(X)
-
-
-# ==============================================================================
-# INTERNAL TEST BLOCK
-# ==============================================================================
-if __name__ == "__main__":
-    print("--- 🚀 STARTING COMPREHENSIVE PIPELINE TEST 🚀 ---")
-
-    NUM_COLS = ["person_age", "person_income", "loan_amnt", "person_emp_length"]
-    CAT_COLS = [
-        "person_home_ownership",
-        "loan_intent",
-        "noise_feature",
-        "strong_cat_feature",
-    ]
-
-    # Mocking Config structure
-    MOCK_CLEANING_CONFIG = {
-        "person_age": {"min": 18, "max": 99},
-        "person_income": {"min": 1},
-        "person_emp_length": {"min": 0, "max": 99},
-        "loan_amnt": {"min": 1},
-    }
-
-    MOCK_BIN_CONFIG = {
-        "default_bins": 3,
-        "person_age": 4,
-    }
-
-    MOCK_DIAGNOSTICS_CONFIG = {
-        "small_bin_threshold": 0.05,
-        "extreme_woe_threshold": 2.0,
-    }
-
-    # MOCK DATA
-    sample_X = pd.DataFrame(
-        {
-            "person_age": [
-                25,
-                30,
-                45,
-                12,
-                150,
-                28,
-                35,
-                40,
-                22,
-                50,
-                29,
-                31,
-                33,
-                27,
-                41,
-                38,
-                24,
-                26,
-                60,
-                -5,
-            ],
-            "person_income": [
-                50000,
-                60000,
-                120000,
-                np.nan,
-                85000,
-                45000,
-                70000,
-                np.nan,
-                30000,
-                200000,
-                55000,
-                62000,
-                80000,
-                48000,
-                95000,
-                72000,
-                40000,
-                52000,
-                110000,
-                np.nan,
-            ],
-            "loan_amnt": [
-                10000,
-                15000,
-                25000,
-                5000,
-                10000,
-                8000,
-                12000,
-                15000,
-                5000,
-                35000,
-                11000,
-                13000,
-                20000,
-                9000,
-                22000,
-                14000,
-                7000,
-                10000,
-                30000,
-                5000,
-            ],
-            "loan_percent_income": [0.2] * 20,
-            "person_emp_length": [
-                10,
-                15,
-                25,
-                5,
-                10,
-                8,
-                12,
-                15,
-                5,
-                35,
-                11,
-                13,
-                20,
-                9,
-                22,
-                14,
-                7,
-                10,
-                30,
-                5,
-            ],
-            "person_home_ownership": [
-                "RENT",
-                "mortgage",
-                "OWN",
-                np.nan,
-                "OWN ",
-                "RENT",
-                "RENT",
-                "MORTGAGE",
-                "RENT",
-                "OWN",
-                "RENT",
-                "MORTGAGE",
-                "OWN",
-                "RENT",
-                "MORTGAGE",
-                "RENT",
-                "RENT",
-                "MORTGAGE",
-                "OWN",
-                np.nan,
-            ],
-            "loan_intent": [
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "PERSONAL",
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "PERSONAL",
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "PERSONAL",
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "PERSONAL",
-                "EDUCATION",
-                "MEDICAL",
-                "VENTURE",
-                "PERSONAL",
-            ],
-            "noise_feature": ["A"] * 20,
-            "strong_cat_feature": [
-                "X",
-                "X",
-                "Y",
-                "Y",
-                "X",
-                "X",
-                "X",
-                "Y",
-                "Y",
-                "X",
-                "X",
-                "X",
-                "Y",
-                "X",
-                "Y",
-                "X",
-                "Y",
-                "X",
-                "Y",
-                "Y",
-            ],
-        }
-    )
-
-    sample_y = pd.Series([0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1])
-
-    # ------------------
-    # RUN TIER 1: CLEANING
-    # ------------------
-    cleaner = CreditDataCleaner(
-        numerical_features=NUM_COLS,
-        categorical_features=CAT_COLS,
-        cleaning_config=MOCK_CLEANING_CONFIG,
-    )
-    clean_data = cleaner.fit_transform(sample_X)
-
-    # ------------------
-    # RUN TIER 2: WOE
-    # ------------------
-    woe_transformer = WOETransformer(
-        numerical_features=cleaner.numerical_features,
-        categorical_features=cleaner.categorical_features,
-        bin_config=MOCK_BIN_CONFIG,
-        diagnostics_config=MOCK_DIAGNOSTICS_CONFIG,
-    )
-    final_data = woe_transformer.fit_transform(clean_data, sample_y)
-
-    # ------------------
-    # SYSTEM AUDIT LOGS
-    # ------------------
-    print("\n" + "=" * 50)
-    print(" 🛠️ [AUDIT] TIER 1: DATA CLEANER")
-    print("=" * 50)
-    cleaner._print_audit_log()
-    print(
-        f"  -> [Check]: Dropped old 'loan_percent_income': {'loan_percent_income' not in clean_data.columns}"
-    )
-    print(
-        f"  -> [Check]: Created 'loan_percent_income_computed': {'loan_percent_income_computed' in clean_data.columns}"
-    )
-
-    print("\n" + "=" * 50)
-    print(" 📊 [AUDIT] BINNING WARNINGS")
-    print("=" * 50)
-    if woe_transformer.diagnostic_warnings_:
-        df_warn = pd.DataFrame(woe_transformer.diagnostic_warnings_)
-        print(df_warn.to_string(index=False))
-    else:
-        print("No Binning Warnings Detected.")
-
-    print("\n==================================================")
-    print("[SUCCESS] Preprocessing Pipeline executed flawlessly! 🎉")
