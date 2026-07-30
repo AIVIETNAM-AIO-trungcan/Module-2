@@ -338,7 +338,6 @@ with tab_single:
 
         try:
             with st.spinner("Processing prediction..."):
-                # Store output in session state to preserve state across admin passcode unlock reruns
                 st.session_state["scoring_result"] = pipeline.predict(input_data)
         except Exception as e:
             st.error(f"❌ Execution Error: {e}")
@@ -369,10 +368,11 @@ with tab_single:
         res_col1, res_col2 = st.columns([1, 2.5])
 
         with res_col1:
-            if Path(mascot_img_path).exists():
-                st.image(mascot_img_path, use_container_width=True)
+            img_path_obj = Path(mascot_img_path)
+            if img_path_obj.exists():
+                st.image(str(img_path_obj), use_container_width=True)
             else:
-                st.info("🤖 [Mascot Image Placeholder]")
+                st.info("🤖 [Mascot Image Loading...]")
 
         with res_col2:
             st.chat_message("assistant").write(f"**{dialogue}**")
@@ -400,11 +400,9 @@ with tab_single:
         st.subheader(t["admin_lock_title"])
         st.caption(t["admin_lock_caption"])
 
-        # Initialize session state for internal underwriter authentication
         if "admin_authenticated" not in st.session_state:
             st.session_state["admin_authenticated"] = False
 
-        # Render authentication widget if access is locked
         if not st.session_state["admin_authenticated"]:
             with st.expander("🔑 " + t["admin_pass_label"], expanded=True):
                 admin_pass_input = st.text_input(
@@ -425,7 +423,6 @@ with tab_single:
                     else:
                         st.error(t["admin_auth_error"])
 
-        # Render sensitive attribution charts and rulebooks if authenticated
         if st.session_state["admin_authenticated"]:
             st.success("🟢 " + t["admin_auth_success"])
 
@@ -465,7 +462,6 @@ with tab_batch:
     st.subheader(t["batch_header"])
     st.caption(t["batch_caption"])
 
-    # Reference CSV template for download
     sample_df: pd.DataFrame = pd.DataFrame(
         [
             {
@@ -506,7 +502,6 @@ with tab_batch:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # CSV File Upload Widget
     uploaded_file: Any = st.file_uploader(
         t["uploader_label"],
         type=["csv"],
@@ -521,7 +516,6 @@ with tab_batch:
             with st.expander(t["preview_input_title"], expanded=False):
                 st.dataframe(raw_batch_df.head(10), use_container_width=True)
 
-            # Trigger batch evaluation pipeline
             if st.button(
                 t["btn_run_batch"],
                 type="primary",
@@ -530,12 +524,16 @@ with tab_batch:
                 batch_input: pd.DataFrame = raw_batch_df.copy()
 
                 with st.spinner(t["batch_spinner"]):
-                    batch_results: pd.DataFrame = pipeline.predict(batch_input)
+                    # Store batch results in session state to persist filter & download reruns
+                    st.session_state["batch_results"] = pipeline.predict(batch_input)
+
+            # Render batch results if session state exists
+            if "batch_results" in st.session_state:
+                batch_results: pd.DataFrame = st.session_state["batch_results"]
 
                 st.divider()
                 st.subheader(t["batch_results_header"])
 
-                # Batch Summary Metrics Display
                 total_records: int = len(batch_results)
                 approved_cnt: int = int((batch_results["decision"] == "APPROVED").sum())
                 review_cnt: int = int(
@@ -558,7 +556,6 @@ with tab_batch:
                     f"{rejected_cnt} ({rejected_cnt/total_records:.1%})",
                 )
 
-                # Underwriting Decision Filter Widget
                 filter_decision: List[str] = st.multiselect(
                     t["filter_label"],
                     options=["APPROVED", "MANUAL_REVIEW", "REJECTED"],
@@ -569,7 +566,6 @@ with tab_batch:
                     batch_results["decision"].isin(filter_decision)
                 ]
 
-                # Result Dataframe Display Options
                 display_cols: List[str] = [
                     "credit_score",
                     "probability_of_default",
@@ -584,7 +580,6 @@ with tab_batch:
                 ]
                 st.dataframe(filtered_df[available_cols], use_container_width=True)
 
-                # Export Batch Evaluation Results to CSV
                 result_csv: bytes = batch_results.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=t["export_btn"],

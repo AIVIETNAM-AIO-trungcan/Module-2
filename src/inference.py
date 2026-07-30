@@ -20,6 +20,9 @@ from huggingface_hub import hf_hub_download
 from src.config import CONFIG_YAML_PATH, RUNS_DIR
 from src.utils import extract_structural_bins
 
+# Define Hugging Face Repository details
+HF_REPO_ID: str = "trungcan94/AIO_moddule_2_model"
+
 
 class CreditScorecardInferencePipeline:
     """Inference Engine class for scoring new credit applicant profiles."""
@@ -34,6 +37,8 @@ class CreditScorecardInferencePipeline:
         self.model: Any = None
         self.score_scaler: Any = None
 
+        # Automatically download assets & model artifacts if missing
+        self._ensure_assets_exist()
         self._ensure_artifacts_exist()
         self._load_artifacts()
 
@@ -82,24 +87,46 @@ class CreditScorecardInferencePipeline:
                 f"[CRITICAL] Invalid inference mode '{mode}'. Supported options are 'auto' or 'manual'."
             )
 
+    def _ensure_assets_exist(self) -> None:
+        """Checks if asset directory exists. Downloads asset.zip from HF Hub if missing."""
+        project_root: Path = self.config_path.resolve().parent.parent
+        asset_dir: Path = project_root / "asset"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+
+        # Check if asset folder is empty
+        if not any(asset_dir.iterdir()):
+            print(
+                "🌐 [CLOUD DOWNLOAD] Asset images missing. Downloading asset.zip from Hugging Face Hub..."
+            )
+            try:
+                downloaded_zip_path = hf_hub_download(
+                    repo_id=HF_REPO_ID,
+                    filename="asset.zip",
+                    repo_type="dataset",
+                )
+                print("📦 [CLOUD DOWNLOAD] Extracting asset files...")
+                with zipfile.ZipFile(downloaded_zip_path, "r") as zip_ref:
+                    zip_ref.extractall(project_root)
+                print("✅ [CLOUD DOWNLOAD] UI Mascot Assets successfully restored!")
+            except Exception as e:
+                print(f"⚠️ [CLOUD DOWNLOAD WARNING] Failed to download asset.zip: {e}")
+
     def _download_artifacts_from_cloud(self, target_models_dir: Path) -> None:
         """Downloads serialized model artifacts ZIP from Hugging Face Hub safely."""
         target_models_dir.mkdir(parents=True, exist_ok=True)
         print(
-            "🌐 [CLOUD DOWNLOAD] Artifacts missing. Downloading from Hugging Face Hub..."
+            "🌐 [CLOUD DOWNLOAD] Model Artifacts missing. Downloading from Hugging Face Hub..."
         )
 
         try:
-            # Download file LFS zip trực tiếp từ Hugging Face Dataset
             downloaded_zip_path = hf_hub_download(
-                repo_id="trungcan94/AIO_moddule_2_model",
+                repo_id=HF_REPO_ID,
                 filename="model.zip",
                 repo_type="dataset",
             )
 
             print("📦 [CLOUD DOWNLOAD] Download completed. Extracting model files...")
 
-            # Extract ZIP content
             with zipfile.ZipFile(downloaded_zip_path, "r") as zip_ref:
                 zip_ref.extractall(target_models_dir)
 
