@@ -88,13 +88,19 @@ class CreditScorecardInferencePipeline:
             )
 
     def _ensure_assets_exist(self) -> None:
-        """Checks if asset directory exists. Downloads asset.zip from HF Hub if missing."""
-        project_root: Path = self.config_path.resolve().parent.parent
+        """Checks if asset directory exists and contains images. Downloads asset.zip from HF Hub if missing."""
+        # Force resolution using Streamlit current working directory
+        project_root: Path = Path.cwd()
         asset_dir: Path = project_root / "asset"
         asset_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if asset folder is empty
-        if not any(asset_dir.iterdir()):
+        # Check if asset folder contains valid image files
+        has_images: bool = any(
+            f.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif"]
+            for f in asset_dir.glob("*")
+        )
+
+        if not has_images:
             print(
                 "🌐 [CLOUD DOWNLOAD] Asset images missing. Downloading asset.zip from Hugging Face Hub..."
             )
@@ -104,12 +110,20 @@ class CreditScorecardInferencePipeline:
                     filename="asset.zip",
                     repo_type="dataset",
                 )
-                print("📦 [CLOUD DOWNLOAD] Extracting asset files...")
+                print(
+                    "📦 [CLOUD DOWNLOAD] Extracting asset files directly to project root..."
+                )
                 with zipfile.ZipFile(downloaded_zip_path, "r") as zip_ref:
                     zip_ref.extractall(project_root)
-                print("✅ [CLOUD DOWNLOAD] UI Mascot Assets successfully restored!")
+
+                files_found = os.listdir(asset_dir) if asset_dir.exists() else []
+                print(
+                    f"✅ [CLOUD DOWNLOAD] Mascot Assets extracted successfully! Files in asset: {files_found}"
+                )
             except Exception as e:
-                print(f"⚠️ [CLOUD DOWNLOAD WARNING] Failed to download asset.zip: {e}")
+                print(
+                    f"⚠️ [CLOUD DOWNLOAD WARNING] Failed to download/extract asset.zip: {e}"
+                )
 
     def _download_artifacts_from_cloud(self, target_models_dir: Path) -> None:
         """Downloads serialized model artifacts ZIP from Hugging Face Hub safely."""
