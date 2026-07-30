@@ -395,97 +395,87 @@ def save_confusion_matrix_heatmap(
 
 
 # ==============================================================================
-# INTERNAL TEST BLOCK
+# 5. Champion Model Auto-Selection & Evaluation Logic
 # ==============================================================================
-if __name__ == "__main__":
-    print("--- Executing Utility Module Independency ---")
-    from src.config import ARTIFACTS_DIR
+def calculate_ks(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """
+    Computes the Kolmogorov-Smirnov (KS) statistic directly for model evaluation.
 
-    current_time = get_timestamp()
-    print(f"[TEST] Current system timestamp: {current_time}")
+    Args:
+        y_true (np.ndarray): Array of true binary labels (1=Bad, 0=Good).
+        y_prob (np.ndarray): Array of predicted probabilities for the Bad class.
 
-    # Test 1: Progress logging check
-    log_progress(
-        step_num=1,
-        total_steps=3,
-        step_name="Mock Progress Ingestion",
-        start_time=time.time(),
+    Returns:
+        float: The maximum KS separation statistic.
+    """
+    df = pd.DataFrame({"y_true": y_true, "y_prob": y_prob}).sort_values(
+        by="y_prob", ascending=False
     )
+    df["cum_good"] = (df["y_true"] == 0).cumsum() / (df["y_true"] == 0).sum()
+    df["cum_bad"] = (df["y_true"] == 1).cumsum() / (df["y_true"] == 1).sum()
+    return float(np.abs(df["cum_bad"] - df["cum_good"]).max())
 
-    # Test 2: Metrics logging
-    MOCK_METRICS = {
-        "test_run_date": current_time,
-        "baseline_auc": 0.8245,
-        "status": "active",
+
+def evaluate_and_select_champion(
+    y_val_true: np.ndarray,
+    y_val_prob_base: np.ndarray,
+    y_val_prob_sub: np.ndarray,
+    model_baseline: Any,
+    model_subset: Any,
+    champ_cfg: Dict[str, Any],
+) -> tuple:
+    """
+    Evaluates both the Baseline and Best Subset models on the validation set,
+    and automatically selects the Champion Model based on predefined rules
+    and a margin of equivalence.
+
+    Args:
+        y_val_true (np.ndarray): True labels of the validation set.
+        y_val_prob_base (np.ndarray): Predicted probabilities from the Baseline model.
+        y_val_prob_sub (np.ndarray): Predicted probabilities from the Subset model.
+        model_baseline (Any): The trained Baseline model object.
+        model_subset (Any): The trained Best Subset model object.
+        champ_cfg (Dict[str, Any]): Configuration dict for champion selection.
+
+    Returns:
+        tuple: (champion_key, champion_model, metrics_log)
+    """
+    # Calculate Evaluation Metrics
+    metrics_log = {
+        "baseline": {
+            "kolmogorov_smirnov_ks": calculate_ks(y_val_true, y_val_prob_base),
+            "roc_auc": float(auc(*roc_curve(y_val_true, y_val_prob_base)[:2])),
+        },
+        "subset": {
+            "kolmogorov_smirnov_ks": calculate_ks(y_val_true, y_val_prob_sub),
+            "roc_auc": float(auc(*roc_curve(y_val_true, y_val_prob_sub)[:2])),
+        },
     }
-    try:
-        save_metrics(
-            MOCK_METRICS, ARTIFACTS_DIR / "metrics" / "test_baseline_performance.json"
-        )
-    except Exception as e:
-        print(f"[TEST FAILED] Metrics stop: {str(e)}")
 
-    # Test 3: WOE tables
-    MOCK_WOE_DATA = {"person_age": {"[0, 25)": 0.15, "[25, 50)": -0.05}}
-    try:
-        save_woe_tables(MOCK_WOE_DATA, ARTIFACTS_DIR / "tables" / "test_run")
-    except Exception as e:
-        print(f"[TEST FAILED] WOE stop: {str(e)}")
+    # Extract Auto-Selection Logic parameters
+    primary = champ_cfg.get("primary_metric", "kolmogorov_smirnov_ks")
+    secondary = champ_cfg.get("secondary_metric", "roc_auc")
+    margin = champ_cfg.get("margin_of_equivalence", 0.01)
 
-    # Test 4: IV Scores
-    MOCK_IV_DATA = {"person_age": 0.2231, "person_income": 0.3456}
-    try:
-        save_iv_scores(MOCK_IV_DATA, ARTIFACTS_DIR / "metrics" / "test_iv_scores.json")
-    except Exception as e:
-        print(f"[TEST FAILED] IV stop: {str(e)}")
+    diff_primary = metrics_log["baseline"][primary] - metrics_log["subset"][primary]
 
-    # Setup core array matrices for updated test assertions
-    MOCK_Y_TRUE = [0, 0, 1, 1, 0, 1, 0, 1, 1, 0]
-    MOCK_Y_PROB = [0.10, 0.25, 0.85, 0.60, 0.30, 0.75, 0.20, 0.70, 0.90, 0.15]
-    MOCK_Y_PRED = [0, 0, 1, 1, 0, 1, 1, 1, 1, 0]
+    if abs(diff_primary) <= margin:
+        # Tie-breaker logic (Secondary Metric) if within equivalence margin
+        diff_sec = metrics_log["baseline"][secondary] - metrics_log["subset"][secondary]
+        champion_key = "baseline" if diff_sec > 0 else "subset"
+    else:
+        # Strict winner logic
+        champion_key = "baseline" if diff_primary > 0 else "subset"
 
-    # Test 5: ROC curve plotting
-    try:
-        save_roc_curve(
-            y_true=MOCK_Y_TRUE,
-            y_prob=MOCK_Y_PROB,
-            file_path=ARTIFACTS_DIR / "plots" / "test_baseline_roc_curve.png",
-        )
-    except Exception as e:
-        print(f"[TEST FAILED] ROC plot stop: {str(e)}")
+    champion_model = model_baseline if champion_key == "baseline" else model_subset
 
-    # Test 6: Updated Classification Report
-    try:
-        save_classification_report(
-            y_true=MOCK_Y_TRUE,
-            y_pred=MOCK_Y_PRED,
-            y_prob=MOCK_Y_PROB,
-            file_path=ARTIFACTS_DIR
-            / "metrics"
-            / "test_baseline_evaluation_report.json",
-        )
-    except Exception as e:
-        print(f"[TEST FAILED] Classification report stop: {str(e)}")
+    print("\n[CHAMPION AUTO-SELECTION] Validation Set Evaluation:")
+    print(
+        f"  -> Baseline Model - {primary}: {metrics_log['baseline'][primary]:.4f} | {secondary}: {metrics_log['baseline'][secondary]:.4f}"
+    )
+    print(
+        f"  -> Best Subset    - {primary}: {metrics_log['subset'][primary]:.4f} | {secondary}: {metrics_log['subset'][secondary]:.4f}"
+    )
+    print(f"  🏆 Winner: {champion_key.upper()} (Margin of Equivalence: {margin})")
 
-    # Test 7: Verify Predict vs Actual distribution mapping chart
-    try:
-        save_probability_distribution(
-            y_true=MOCK_Y_TRUE,
-            y_prob=MOCK_Y_PROB,
-            file_path=ARTIFACTS_DIR / "plots" / "test_probability_distribution.png",
-        )
-    except Exception as e:
-        print(f"[TEST FAILED] Prob distribution stop: {str(e)}")
-
-    # Test 8: Verify confusion matrix heatmap
-    try:
-        save_confusion_matrix_heatmap(
-            y_true=MOCK_Y_TRUE,
-            y_pred=MOCK_Y_PRED,
-            file_path=ARTIFACTS_DIR / "plots" / "test_confusion_matrix_heatmap.png",
-        )
-        print("\n==================================================")
-        print("[SUCCESS] All 8 utility sandbox test cases executed successfully.")
-        print("==================================================")
-    except Exception as e:
-        print(f"[TEST FAILED] CM Heatmap stop: {str(e)}")
+    return champion_key, champion_model, metrics_log
