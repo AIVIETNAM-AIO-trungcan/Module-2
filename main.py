@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any
-from sklearn.metrics import roc_auc_score
 
 # Import localized modules from the src factory
 from src.data_loader import load_raw_training_data, split_train_val_test
@@ -35,6 +34,7 @@ from src.utils import (
     log_progress,
     extract_structural_bins,
     evaluate_and_select_champion,
+    calculate_calibration_error,  # <-- Added Calibration Error Helper
 )
 
 
@@ -121,31 +121,73 @@ def main() -> None:
     )
 
     global_mutation_log = []
+    cleaning_summaries = {}
 
+    # --- 4.1 TRAINING SET AUDIT ---
+    print("\n" + "-" * 70)
+    print("📊 [TIER-1 AUDIT] EVALUATING TRAINING SET")
     X_train_clean: pd.DataFrame = cleaner.fit_transform(X_train)
+    cleaner._print_audit_log()
+
     train_mutations = cleaner.audit_report_.get("mutation_details", [])
     for mutation in train_mutations:
         mutation["dataset_type"] = "train"
     global_mutation_log.extend(train_mutations)
+
+    cleaning_summaries["train"] = {
+        "total_input_records": cleaner.audit_report_.get("total_input_records"),
+        "final_records": cleaner.audit_report_.get("final_records"),
+        "outliers_dropped_count": cleaner.audit_report_.get("outliers_dropped_count"),
+        "outliers_dropped_ratio": cleaner.audit_report_.get("outliers_dropped_ratio"),
+        "reason_codes_flagged": cleaner.audit_report_.get("reason_codes_flagged"),
+        "missing_values_imputed": cleaner.audit_report_.get("missing_values_imputed"),
+    }
     y_train = y_train.loc[X_train_clean.index]
 
+    # --- 4.2 VALIDATION SET AUDIT ---
+    print("\n" + "-" * 70)
+    print("📊 [TIER-1 AUDIT] EVALUATING VALIDATION SET")
     X_val_clean: pd.DataFrame = cleaner.transform(X_val)
+    cleaner._print_audit_log()
+
     val_mutations = cleaner.audit_report_.get("mutation_details", [])
     for mutation in val_mutations:
         mutation["dataset_type"] = "validation"
     global_mutation_log.extend(val_mutations)
+
+    cleaning_summaries["validation"] = {
+        "total_input_records": cleaner.audit_report_.get("total_input_records"),
+        "final_records": cleaner.audit_report_.get("final_records"),
+        "outliers_dropped_count": cleaner.audit_report_.get("outliers_dropped_count"),
+        "outliers_dropped_ratio": cleaner.audit_report_.get("outliers_dropped_ratio"),
+        "reason_codes_flagged": cleaner.audit_report_.get("reason_codes_flagged"),
+        "missing_values_imputed": cleaner.audit_report_.get("missing_values_imputed"),
+    }
     y_val = y_val.loc[X_val_clean.index]
 
+    # --- 4.3 TESTING SET AUDIT ---
+    print("\n" + "-" * 70)
+    print("📊 [TIER-1 AUDIT] EVALUATING TESTING SET")
     X_test_clean: pd.DataFrame = cleaner.transform(X_test)
+    cleaner._print_audit_log()
+
     test_mutations = cleaner.audit_report_.get("mutation_details", [])
     for mutation in test_mutations:
         mutation["dataset_type"] = "test"
     global_mutation_log.extend(test_mutations)
+
+    cleaning_summaries["test"] = {
+        "total_input_records": cleaner.audit_report_.get("total_input_records"),
+        "final_records": cleaner.audit_report_.get("final_records"),
+        "outliers_dropped_count": cleaner.audit_report_.get("outliers_dropped_count"),
+        "outliers_dropped_ratio": cleaner.audit_report_.get("outliers_dropped_ratio"),
+        "reason_codes_flagged": cleaner.audit_report_.get("reason_codes_flagged"),
+        "missing_values_imputed": cleaner.audit_report_.get("missing_values_imputed"),
+    }
     y_test = y_test.loc[X_test_clean.index]
 
+    # Attach the globally aggregated log back to the cleaner for downstream export
     cleaner.audit_report_["mutation_details"] = global_mutation_log
-    print("\n" + "-" * 70)
-    cleaner._print_audit_log()
 
     # --------------------------------------------------------------------------
     # STEP 5: TIER-2 DYNAMIC WOE BINNING & ENCODING
@@ -236,6 +278,21 @@ def main() -> None:
     val_scores: pd.Series = score_scaler.transform(X_val_bins)
     test_scores: pd.Series = score_scaler.transform(X_test_bins)
 
+    # --- FINANCIAL CALIBRATION AUDIT (TECH LEAD REQUIREMENT) ---
+    y_val_prob_champ = y_val_prob_base if champion_key == "baseline" else y_val_prob_sub
+    calibration_metrics = calculate_calibration_error(
+        y_prob=y_val_prob_champ,
+        actual_scores=val_scores,
+        scaling_config=config["scorecard_scaling"],
+    )
+
+    with open(
+        current_run_dir / "metrics" / "pdo_calibration_error.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(calibration_metrics, f, indent=4)
+
     # --- PHYSICAL DATASETS EXPORTATION ---
     print("[MLOPS] Saving processed row-level datasets to storage records...")
 
@@ -275,19 +332,11 @@ def main() -> None:
             index_label="original_index",
         )
 
-    # 2. Export Tier 1 Cleaning Summary JSON
-    cleaning_summary = {
-        "total_input_records": cleaner.audit_report_.get("total_input_records"),
-        "final_records": cleaner.audit_report_.get("final_records"),
-        "outliers_dropped_count": cleaner.audit_report_.get("outliers_dropped_count"),
-        "outliers_dropped_ratio": cleaner.audit_report_.get("outliers_dropped_ratio"),
-        "reason_codes_flagged": cleaner.audit_report_.get("reason_codes_flagged"),
-        "missing_values_imputed": cleaner.audit_report_.get("missing_values_imputed"),
-    }
+    # 2. Export Tier 1 Cleaning Summary JSON (Now includes Train, Val, and Test separately)
     with open(
         current_run_dir / "tables" / "data_cleaning_summary.json", "w", encoding="utf-8"
     ) as f:
-        json.dump(cleaning_summary, f, indent=4)
+        json.dump(cleaning_summaries, f, indent=4)
 
     # 3. Export Data Mutation Details (if any business logic violated)
     if cleaner.audit_report_.get("mutation_details"):
@@ -449,6 +498,20 @@ def main() -> None:
     else:
         print("🚨 RISK STATUS: FAILED. Review positive features for trend reversal.")
     print("======================================================================")
+
+    # --- FINANCIAL CALIBRATION AUDIT SUMMARY ---
+    print("\n======================================================================")
+    print("⚖️ FINANCIAL CALIBRATION AUDIT (PDO ROUNDING ERROR)")
+    print("======================================================================")
+    print(
+        f"  -> Mean Absolute Error (MAE) : {calibration_metrics['mean_absolute_error_points']:.4f} points"
+    )
+    print(
+        f"  -> Maximum Point Deviation   : {calibration_metrics['max_absolute_error_points']:.4f} points"
+    )
+    print(
+        f"  -> Calibration Variance      : {calibration_metrics['calibration_variance_ratio']:.4f} (Ideal is ~1.0)"
+    )
 
     total_elapsed: float = time.time() - start_time
     print(

@@ -41,11 +41,11 @@ validation:
   cb_person_cred_hist_length:
     min: 0
 
-# 2.1. Tier-1 Data Cleaning Configuration (Outlier Handling)
+# 2.1. Tier-1 Data Cleaning Configuration (Outlier Handling & Imputation)
 cleaning_config:
   outlier_handling:
     enabled: true
-    strategy: "drop" # Drop extreme outliers directly to preserve binning monotonicity
+    strategy: "capping" # Changed from "drop" to "capping" to preserve training volume
     method: "zscore" # Options: "zscore" or "iqr". Toggle this to switch the mathematical logic used in Python.
 
     # Mathematical thresholds for the selected method
@@ -56,6 +56,10 @@ cleaning_config:
       - "person_age"
       - "person_emp_length"
       - "cb_person_cred_hist_length"
+
+  # Strict Banking Rule: Disable imputation to let OptBinning handle Missing values as a separate risk bin
+  imputation:
+    enabled: false
 
 # 3. Compute new data
 derived_features:
@@ -91,14 +95,11 @@ features:
     divergence: "iv"
     max_n_prebins: 20
     min_prebin_size: 0.05
-    max_n_bins: 6
+    max_n_bins: 5 # Strict Tech Lead Rule: Maximum 5 bins per feature for stability
     monotonic_trend: "auto"
     # Manual overrides for specific columns
     default_bins: 5
-    person_age: 5
-    person_income: 5
     person_emp_length: 4
-    loan_amnt: 7
 
   # Settings for WOE validation and diagnostics
   woe_diagnostics:
@@ -128,7 +129,7 @@ features:
     champion_selection:
       # Options: "kolmogorov_smirnov_ks", "roc_auc", "f1_score"
       primary_metric: "kolmogorov_smirnov_ks" # The main decider for credit risk separation
-      secondary_metric: "roc_auc" # The tie-breaker for overall ranking stability
+      secondary_metric: "gini_index" # The tie-breaker for overall ranking stability
       margin_of_equivalence: 0.01 # If the primary metric diff is <= 1%, use the secondary metric
 
 # 5. Define target variable for model prediction

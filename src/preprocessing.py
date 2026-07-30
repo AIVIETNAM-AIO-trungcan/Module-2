@@ -2,8 +2,9 @@
 Preprocessing Pipeline for Credit Scoring
 -----------------------------------------
 This module splits the preprocessing into 2 separate steps:
-1. CreditDataCleaner: Standardizes values, handles extreme outliers (Z-score/IQR),
-   and imputes missing values dynamically based on validation rules from config.yaml.
+1. CreditDataCleaner: Standardizes values, handles extreme outliers via Capping,
+   enforces strict business logic (e.g., Emp Length < Age), and manages missing
+   values dynamically based on config.yaml.
 2. WOETransformer: Powered by `optbinning` for optimal monotonic binning, WOE encoding,
    and strict mathematical integrity validation (auto-diagnostics).
 
@@ -51,9 +52,9 @@ from optbinning import OptimalBinning
 # ==============================================================================
 class CreditDataCleaner:
     """
-    Step 1: Cleans the raw credit dataset by dropping extreme outliers mathematically,
-    removing invalid business records, standardizing categorical values,
-    and handling missing values dynamically based on config.yaml.
+    Step 1: Cleans the raw credit dataset by capping extreme outliers mathematically,
+    removing invalid business records (e.g., employment length >= age),
+    standardizing categorical values, and respecting missing values dynamically.
     """
 
     def __init__(
@@ -85,25 +86,19 @@ class CreditDataCleaner:
         """
         Fits the cleaner to the data.
         Nothing is learned mathematically because all cleaning rules are predefined.
-
-        Args:
-            X (pd.DataFrame): Training feature matrix.
-            y (Optional[pd.Series]): Target values.
-
-        Returns:
-            CreditDataCleaner: The fitted instance.
         """
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Cleans the dataset using statistical outlier dropping and dynamic business boundaries.
+        Cleans the dataset using statistical outlier capping and dynamic business boundaries.
 
         Args:
             X (pd.DataFrame): Raw input DataFrame.
 
         Returns:
-            pd.DataFrame: A fully cleaned and imputed DataFrame. The index might be shorter if outliers were dropped.
+            pd.DataFrame: A fully cleaned DataFrame.
+            The index might be shorter if strictly invalid business logic outliers were dropped.
         """
         X_clean = X.copy()
         total_records = len(X_clean)
@@ -113,16 +108,14 @@ class CreditDataCleaner:
         mutation_audit_log: List[Dict[str, Any]] = []
 
         # ======================================================================
-        # 1. STATISTICAL OUTLIER DROPPING (Z-SCORE / IQR)
+        # 1. STATISTICAL OUTLIER HANDLING (Z-SCORE / IQR CAPPING OR DROPPING)
         # ======================================================================
         outlier_config = self.cleaning_config.get("outlier_handling", {})
+        strategy = outlier_config.get("strategy", "capping")
         dropped_outliers_count = 0
         dropped_outliers_ratio = 0.0
 
-        if (
-            outlier_config.get("enabled", False)
-            and outlier_config.get("strategy") == "drop"
-        ):
+        if outlier_config.get("enabled", False):
             method = outlier_config.get("method", "zscore")
             target_cols = outlier_config.get("target_columns", [])
             z_thresh = outlier_config.get("zscore_threshold", 3.0)
@@ -138,9 +131,10 @@ class CreditDataCleaner:
                         mean_val = series.mean()
                         std_val = series.std()
                         if std_val > 0:
-                            z_scores = np.abs((series - mean_val) / std_val)
-                            outlier_idx = series[z_scores > z_thresh].index
-                            indices_to_drop.update(outlier_idx.tolist())
+                            lower_bound = mean_val - z_thresh * std_val
+                            upper_bound = mean_val + z_thresh * std_val
+                        else:
+                            lower_bound, upper_bound = mean_val, mean_val
 
                     elif method == "iqr":
                         q1 = series.quantile(0.25)
@@ -148,12 +142,25 @@ class CreditDataCleaner:
                         iqr_val = q3 - q1
                         lower_bound = q1 - iqr_mult * iqr_val
                         upper_bound = q3 + iqr_mult * iqr_val
+
+                    if strategy == "drop":
                         outlier_idx = series[
                             (series < lower_bound) | (series > upper_bound)
                         ].index
                         indices_to_drop.update(outlier_idx.tolist())
 
-            if indices_to_drop:
+                    elif strategy == "capping":
+                        outlier_mask = (X_clean[col] < lower_bound) | (
+                            X_clean[col] > upper_bound
+                        )
+                        outliers_count = outlier_mask.sum()
+                        if outliers_count > 0:
+                            X_clean[col] = np.clip(
+                                X_clean[col], lower_bound, upper_bound
+                            )
+                            reason_codes[f"CAPPED_OUTLIERS_{col}"] = int(outliers_count)
+
+            if strategy == "drop" and indices_to_drop:
                 dropped_outliers_count = len(indices_to_drop)
                 dropped_outliers_ratio = (dropped_outliers_count / total_records) * 100
                 reason_codes[f"DROPPED_OUTLIERS_{method.upper()}"] = (
@@ -198,7 +205,19 @@ class CreditDataCleaner:
                     )
                 )
 
-        # [MUTATION LOGGING]: Assign invalid business logic values to NaN
+        # [STRICT BUSINESS RULE]: Drop records where Employment Length >= Biological Age
+        if "person_emp_length" in X_clean.columns and "person_age" in X_clean.columns:
+            invalid_logic_mask = (
+                (X_clean["person_emp_length"] >= X_clean["person_age"])
+                & X_clean["person_emp_length"].notna()
+                & X_clean["person_age"].notna()
+            )
+            invalid_logic_count = invalid_logic_mask.sum()
+            if invalid_logic_count > 0:
+                reason_codes["DROPPED_EMP_GE_AGE"] = int(invalid_logic_count)
+                X_clean = X_clean.drop(index=X_clean[invalid_logic_mask].index)
+
+        # [MUTATION LOGGING]: Assign invalid single-field boundaries to NaN
         if "person_age" in X_clean.columns:
             invalid_age_mask = (
                 ~X_clean["person_age"].between(AGE_MIN, AGE_MAX)
@@ -320,17 +339,24 @@ class CreditDataCleaner:
         # Remove original loan percentage feature to prevent multicollinearity
         X_clean = X_clean.drop(columns=["loan_percent_income"], errors="ignore")
 
-        # Track missing value counts before imputation
+        # Track missing value counts before imputation (if any)
         missing_counts = X_clean.isna().sum().to_dict()
 
-        # Fill missing numerical values with constant -1.0 flag
-        if self.numerical_features:
-            numerical_columns = [
-                col for col in self.numerical_features if col in X_clean.columns
-            ]
-            X_clean[numerical_columns] = X_clean[numerical_columns].fillna(-1.0)
+        # ======================================================================
+        # 3. IMPUTATION HANDLING
+        # ======================================================================
+        imputation_config = self.cleaning_config.get("imputation", {})
 
-        # Fill missing categorical values with string "Missing" flag
+        # Tech Lead Rule: Do not impute numerical missing values with Mean/Median.
+        # Leave them as NaN so OptBinning assigns them to an isolated 'Missing' Bin for proper risk profiling.
+        if imputation_config.get("enabled", False):
+            if self.numerical_features:
+                numerical_columns = [
+                    col for col in self.numerical_features if col in X_clean.columns
+                ]
+                X_clean[numerical_columns] = X_clean[numerical_columns].fillna(-1.0)
+
+        # For categoricals, we explicitly map NaNs to the string "Missing" to ensure type consistency
         if self.categorical_features:
             categorical_columns = [
                 col for col in self.categorical_features if col in X_clean.columns
@@ -346,7 +372,11 @@ class CreditDataCleaner:
             "outliers_dropped_count": dropped_outliers_count,
             "outliers_dropped_ratio": dropped_outliers_ratio,
             "reason_codes_flagged": reason_codes,
-            "missing_values_imputed": missing_counts,
+            "missing_values_imputed": (
+                missing_counts
+                if imputation_config.get("enabled", False)
+                else {"Imputation Disabled": 0}
+            ),
             "mutation_details": mutation_audit_log,
         }
 
@@ -364,13 +394,31 @@ class CreditDataCleaner:
             f"[DATA QUALITY AUDIT] Total Population Evaluated: {self.audit_report_['total_input_records']} rows"
         )
 
-        # Log dropped outliers rationale
+        # Log dropped/capped outliers rationale
         drop_count = self.audit_report_.get("outliers_dropped_count", 0)
         drop_ratio = self.audit_report_.get("outliers_dropped_ratio", 0.0)
         if drop_count > 0:
             print(
                 f"  -> [STATISTICAL CLEANING] Permanently dropped {drop_count} extreme outlier records "
                 f"({drop_ratio:.4f}% of total data) to preserve risk monotonicity."
+            )
+
+        capped_count = sum(
+            v
+            for k, v in self.audit_report_.get("reason_codes_flagged", {}).items()
+            if "CAPPED" in k
+        )
+        if capped_count > 0:
+            print(
+                f"  -> [STATISTICAL CLEANING] Successfully capped {capped_count} extreme outlier values to upper/lower boundaries."
+            )
+
+        biz_drop_count = self.audit_report_.get("reason_codes_flagged", {}).get(
+            "DROPPED_EMP_GE_AGE", 0
+        )
+        if biz_drop_count > 0:
+            print(
+                f"  -> [BUSINESS RULE] Permanently dropped {biz_drop_count} records due to impossible logic (Emp Length >= Age)."
             )
 
         flags = self.audit_report_.get("reason_codes_flagged", {})
@@ -381,7 +429,11 @@ class CreditDataCleaner:
                     action = (
                         "Permanently Dropped"
                         if "DROPPED" in code
-                        else "Converted to NaN"
+                        else (
+                            "Capped to Bounds"
+                            if "CAPPED" in code
+                            else "Converted to NaN"
+                        )
                     )
                     print(f"     * [{code}]: {count} records ({action})")
 
@@ -392,11 +444,15 @@ class CreditDataCleaner:
             )
 
         imputed = self.audit_report_.get("missing_values_imputed", {})
-        if imputed:
+        if imputed and "Imputation Disabled" not in imputed:
             print("  -> Imputed Missing Values:")
             for col, count in imputed.items():
                 if count > 0:
                     print(f"     * [{col}]: {count} rows imputed")
+        elif "Imputation Disabled" in imputed:
+            print(
+                "  -> [MISSING VALUES]: Imputation is DISABLED. NaN values preserved for Risk Binning."
+            )
 
     def fit_transform(
         self,
@@ -464,7 +520,9 @@ class WOETransformer:
         Strips PyArrow string wrappers to ensure clean labels in downstream charts.
         """
         if feature in self.categorical_features:
-            return np.array(data[feature].astype(str).tolist(), dtype=object)
+            return np.array(
+                data[feature].fillna("Missing").astype(str).tolist(), dtype=object
+            )
         return pd.to_numeric(data[feature], errors="coerce").to_numpy()
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "WOETransformer":
@@ -497,9 +555,6 @@ class WOETransformer:
                 "categorical" if feature in self.categorical_features else "numerical"
             )
 
-            # Setup Special Codes matching Tier 1 imputations
-            special_codes = ["Missing"] if f_type == "categorical" else [-1.0]
-
             # Dynamic parameters overriding mechanism
             params = {
                 "name": feature,
@@ -510,9 +565,9 @@ class WOETransformer:
                 "max_n_prebins": self.bin_config.get("max_n_prebins", 20),
                 "min_prebin_size": self.bin_config.get("min_prebin_size", 0.05),
                 "max_n_bins": self.bin_config.get(
-                    feature, self.bin_config.get("default_bins", 6)
+                    feature, self.bin_config.get("default_bins", 5)
                 ),
-                "special_codes": special_codes,
+                "special_codes": ["Missing"] if f_type == "categorical" else None,
             }
 
             if f_type == "numerical":
@@ -573,9 +628,19 @@ class WOETransformer:
 
                 self.woe_dictionaries[feature] = feature_woe_dict
             else:
-                self.woe_dictionaries[feature] = dict(
-                    zip(clean_dict_table["Bin"].astype(str), clean_dict_table["WoE"])
-                )
+                feature_woe_dict = {}
+                bin_counter = 0
+                for _, row in clean_dict_table.iterrows():
+                    bin_original_name = str(row["Bin"]).strip()
+                    woe_val = float(row["WoE"])
+
+                    if bin_original_name in ["Special", "Missing"]:
+                        feature_woe_dict[bin_original_name] = woe_val
+                    else:
+                        feature_woe_dict[f"Bin_{bin_counter}"] = woe_val
+                        bin_counter += 1
+
+                self.woe_dictionaries[feature] = feature_woe_dict
 
             # Run Background Analytics/Diagnostics
             self._run_binning_diagnostics(feature, full_table, n_train)
