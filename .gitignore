@@ -38,6 +38,7 @@ tempCodeRunnerFile.py
 # Streamlit & Secrets (Crucial for Deployment Security)
 # ==============================================================================
 .streamlit/secrets.toml
+.env
 
 # ==============================================================================
 # Project Specific Data & Artifacts Overrides (Security & Size Protection)
@@ -66,3 +67,7 @@ artifacts/runs/**/plots/
 *.png
 *.jpg
 *.jpeg
+
+# Ignore model package zip files
+*.zip
+artifacts/**/*.zip

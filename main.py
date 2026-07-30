@@ -3,18 +3,23 @@ Main Execution Pipeline - Credit Risk Scorecard Project
 ------------------------------------------------------
 Orchestrates data loading, absolute split isolation, two-tier preprocessing
 safeguards, dynamic WOE transformation, dual-branch feature selection,
-champion model auto-selection, and multi-population artifact packages.
+champion model auto-selection, multi-population artifact packages, and cloud sync.
 """
 
+from dotenv import load_dotenv
+
+load_dotenv()  # Auto-loads environment variables from .env file
 import os
 import time
 import yaml
 import joblib
 import json
+import zipfile
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any
+from huggingface_hub import HfApi
 
 # Import localized modules from the src factory
 from src.data_loader import load_raw_training_data, split_train_val_test
@@ -34,8 +39,51 @@ from src.utils import (
     log_progress,
     extract_structural_bins,
     evaluate_and_select_champion,
-    calculate_calibration_error,  # <-- Added Calibration Error Helper
+    calculate_calibration_error,
 )
+
+
+def package_and_upload_artifacts(run_dir: Path, config: Dict[str, Any]) -> None:
+    """
+    Packages production model binaries into model.zip and syncs with Hugging Face Hub.
+    """
+    models_dir = run_dir / "models"
+    zip_path = run_dir / "model.zip"
+
+    print("\n" + "=" * 70)
+    print("📦 [MLOPS CLOUD] PACKAGING MODEL ARTIFACTS FOR DEPLOYMENT")
+    print("=" * 70)
+
+    # 1. Zip model binaries
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in models_dir.glob("*"):
+            if file_path.is_file():
+                zipf.write(file_path, arcname=file_path.name)
+    print(f"  -> Successfully zipped production binaries to: {zip_path.name}")
+
+    # 2. Upload to Hugging Face Hub if token available
+    hf_token = os.getenv("HF_TOKEN")
+    repo_id = "trungcan94/AIO_moddule_2_model"
+
+    if hf_token:
+        try:
+            print(f"  -> Uploading 'model.zip' to Hugging Face Dataset: {repo_id}...")
+            api = HfApi()
+            api.upload_file(
+                path_or_fileobj=str(zip_path),
+                path_in_repo="model.zip",
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=hf_token,
+            )
+            print("  ✅ [SUCCESS] Production model published to Hugging Face Cloud!")
+        except Exception as e:
+            print(f"  ⚠️ [UPLOAD WARNING] Cloud sync failed: {e}")
+    else:
+        print("  ℹ️ [LOCAL SYNC] HF_TOKEN environment variable not detected.")
+        print(
+            "     Local 'model.zip' created. Streamlit inference engine will read locally."
+        )
 
 
 def main() -> None:
@@ -186,7 +234,6 @@ def main() -> None:
     }
     y_test = y_test.loc[X_test_clean.index]
 
-    # Attach the globally aggregated log back to the cleaner for downstream export
     cleaner.audit_report_["mutation_details"] = global_mutation_log
 
     # --------------------------------------------------------------------------
@@ -208,7 +255,7 @@ def main() -> None:
     X_test_woe: pd.DataFrame = woe_transformer.transform(X_test_clean)
 
     # --------------------------------------------------------------------------
-    # STEP 6: TIER-3 DUAL-BRANCH FEATURE SELECTION (BASELINE VS SUBSET)
+    # STEP 6: TIER-3 DUAL-BRANCH FEATURE SELECTION
     # --------------------------------------------------------------------------
     log_progress(
         6, TOTAL_STEPS, "Running Tier-3 Dual-Branch Feature Selection", start_time
@@ -241,7 +288,6 @@ def main() -> None:
     y_val_prob_sub = model_subset.predict_probability(X_val_sel_dict["subset"])
     y_val_true_arr = y_val.to_numpy()
 
-    # Delegate complex evaluation and decision-making to the utility engine
     champ_cfg = selection_config.get("champion_selection", {})
     champion_key, champion_model, metrics_log = evaluate_and_select_champion(
         y_val_true=y_val_true_arr,
@@ -265,7 +311,7 @@ def main() -> None:
     for sub_dir in ["plots", "metrics", "models", "data", "tables"]:
         (current_run_dir / sub_dir).mkdir(parents=True, exist_ok=True)
 
-    # --- FINANCIAL SCORE SCALE CONVERSION (Champion Only) ---
+    # --- FINANCIAL SCORE SCALE CONVERSION ---
     print(f"[MLOPS] Activating Scorecard Scaling for Champion ({champion_key})...")
     score_scaler = CreditScorecardScaler(scaling_config=config["scorecard_scaling"])
     score_scaler.fit(model_trainer=champion_model, woe_transformer=woe_transformer)
@@ -278,7 +324,7 @@ def main() -> None:
     val_scores: pd.Series = score_scaler.transform(X_val_bins)
     test_scores: pd.Series = score_scaler.transform(X_test_bins)
 
-    # --- FINANCIAL CALIBRATION AUDIT (TECH LEAD REQUIREMENT) ---
+    # --- FINANCIAL CALIBRATION AUDIT ---
     y_val_prob_champ = y_val_prob_base if champion_key == "baseline" else y_val_prob_sub
     calibration_metrics = calculate_calibration_error(
         y_prob=y_val_prob_champ,
@@ -295,8 +341,6 @@ def main() -> None:
 
     # --- PHYSICAL DATASETS EXPORTATION ---
     print("[MLOPS] Saving processed row-level datasets to storage records...")
-
-    final_features = champion_model.final_features_
 
     train_historical = X_train_sel_dict[champion_key].copy()
     train_historical["credit_score"] = train_scores
@@ -323,7 +367,6 @@ def main() -> None:
     # --- AUDIT LOGS EXPORT ---
     print("[MLOPS] Saving Validation & Quality Audit Logs...")
 
-    # 1. Export QA Audit: Dropped Outliers (Identified via index mapping)
     dropped_outliers_df = df_train.loc[~df_train.index.isin(X_train_clean.index)].copy()
     if not dropped_outliers_df.empty:
         dropped_outliers_df.to_csv(
@@ -332,25 +375,21 @@ def main() -> None:
             index_label="original_index",
         )
 
-    # 2. Export Tier 1 Cleaning Summary JSON (Now includes Train, Val, and Test separately)
     with open(
         current_run_dir / "tables" / "data_cleaning_summary.json", "w", encoding="utf-8"
     ) as f:
         json.dump(cleaning_summaries, f, indent=4)
 
-    # 3. Export Data Mutation Details (if any business logic violated)
     if cleaner.audit_report_.get("mutation_details"):
         pd.DataFrame(cleaner.audit_report_["mutation_details"]).to_csv(
             current_run_dir / "tables" / "data_mutation_audit_log.csv", index=False
         )
 
-    # 4. Export WOE Binning Diagnostics
     if woe_transformer.diagnostic_warnings_:
         pd.DataFrame(woe_transformer.diagnostic_warnings_).to_csv(
             current_run_dir / "tables" / "woe_diagnostics_warnings.csv", index=False
         )
 
-    # 5. Export Champion vs Challenger Comparison Log
     with open(
         current_run_dir / "metrics" / "champion_vs_challenger_comparison.json",
         "w",
@@ -374,7 +413,7 @@ def main() -> None:
     score_scaler.export_artifacts(folder_path=current_run_dir / "tables")
     score_scaler.plot_monotonic_barcharts(folder_path=current_run_dir / "plots")
 
-    # --- POPULATION EVALUATIONS (Champion Model) ---
+    # --- POPULATION EVALUATIONS ---
     X_train_champ = X_train_sel_dict[champion_key]
     X_val_champ = X_val_sel_dict[champion_key]
     X_test_champ = X_test_sel_dict[champion_key]
@@ -447,6 +486,9 @@ def main() -> None:
     joblib.dump(score_scaler, current_run_dir / "models" / "score_scaler.pkl")
 
     print("[MLOPS] Production artifacts successfully locked.")
+
+    # --- AUTOMATED MODEL PACKAGING & CLOUD SYNC ---
+    package_and_upload_artifacts(run_dir=current_run_dir, config=config)
 
     # ==============================================================================
     # FINAL EXECUTIVE PERFORMANCE AUDIT SUMMARIES
