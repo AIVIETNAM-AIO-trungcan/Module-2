@@ -8,19 +8,22 @@ and incorporate interactive mascot risk guidance.
 """
 
 from io import StringIO
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
+import zipfile
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yaml
+from huggingface_hub import hf_hub_download
 
 from src.inference import CreditScorecardInferencePipeline
 
 # ------------------------------------------------------------------------------
-# 1. PAGE CONFIGURATION & CACHING
+# 1. PAGE CONFIGURATION & AUTOMATIC ASSET SYNC
 # ------------------------------------------------------------------------------
 st.set_page_config(
     page_title="Credit Risk Scorecard System",
@@ -28,6 +31,34 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def force_ensure_assets() -> None:
+    """Ensures asset directory exists and contains images.
+
+    Downloads asset.zip from Hugging Face if missing on Cloud deployment.
+    """
+    project_root = Path.cwd()
+    asset_dir = project_root / "asset"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    main_logo = asset_dir / "capybara_main.png"
+    if not main_logo.exists():
+        try:
+            zip_path = hf_hub_download(
+                repo_id="trungcan94/AIO_moddule_2_model",
+                filename="asset.zip",
+                repo_type="dataset",
+            )
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(asset_dir)
+            print(f"✅ Extracted asset files into asset_dir: {os.listdir(asset_dir)}")
+        except Exception as e:
+            print(f"❌ Failed to fetch assets from Hugging Face: {e}")
+
+
+# Run asset check on load
+force_ensure_assets()
 
 
 @st.cache_data
@@ -138,7 +169,10 @@ with st.sidebar:
     st.title(ui_cfg["project_info"]["title"])
     st.caption(f"🚀 **{ui_cfg['project_info']['team_name']}**")
 
-    logo_path: Path = Path(ui_cfg["project_info"]["logo_path"])
+    # Dynamic image resolution for sidebar logo
+    logo_filename = Path(ui_cfg["project_info"]["logo_path"]).name
+    logo_path = Path.cwd() / "asset" / logo_filename
+
     if logo_path.exists():
         st.image(str(logo_path), use_container_width=True)
 
@@ -368,9 +402,11 @@ with tab_single:
         res_col1, res_col2 = st.columns([1, 2.5])
 
         with res_col1:
-            img_path_obj = Path(mascot_img_path)
-            if img_path_obj.exists():
-                st.image(str(img_path_obj), use_container_width=True)
+            mascot_filename = Path(mascot_img_path).name
+            mascot_path = Path.cwd() / "asset" / mascot_filename
+
+            if mascot_path.exists():
+                st.image(str(mascot_path), use_container_width=True)
             else:
                 st.info("🤖 [Mascot Image Loading...]")
 
