@@ -1,17 +1,24 @@
 # ==============================================================================
-# CREDIT RISK SCORECARD ENGINE - USER INTERFACE CONFIGURATION
+# CREDIT RISK SCORECARD ENGINE - USER INTERFACE & LOCALIZATION CONFIGURATION
 # ==============================================================================
-# Description: Configuration schema for localization (i18n), layout parameters,
-#              currency rates, and UI mascot responses.
-# Maintainer : FinTech Innovation Group
+# Description: Configuration schema managing internationalization (i18n),
+#              layout parameters, currency exchange rates, UI mascot responses,
+#              categorical value mappings, and admin access controls.
+# Maintainer : Porsche Club
 # ==============================================================================
 
+# ------------------------------------------------------------------------------
+# PROJECT METADATA & BRANDING
+# ------------------------------------------------------------------------------
 project_info:
   title: "Module 2: Credit Risk Scoring and Decision Support System"
   subtitle: "Automated Credit Risk Assessment & Decision Support System"
   team_name: "Porsche_Club"
   logo_path: "asset/capybara_main.png"
 
+# ------------------------------------------------------------------------------
+# CURRENCY CONVERSION & FORMATTING PARAMETERS
+# ------------------------------------------------------------------------------
 currency:
   symbol_vnd: "VND"
   symbol_usd: "USD"
@@ -19,6 +26,9 @@ currency:
   thousand_separator: "."
   decimal_separator: ","
 
+# ------------------------------------------------------------------------------
+# MASCOT & DECISION RESPONSE CONFIGURATION
+# ------------------------------------------------------------------------------
 mascot:
   default_image: "asset/capybara_main.png"
   outcomes:
@@ -42,11 +52,12 @@ mascot:
         en: "😔 Unfortunately, your current credit risk profile exceeds our risk threshold."
 
 # ------------------------------------------------------------------------------
-# LOCALIZATION & INTERNATIONALIZATION (i18n)
+# LOCALIZATION & INTERNATIONALIZATION (i18n) DICTIONARY
 # ------------------------------------------------------------------------------
 i18n:
+  # Vietnamese UI Strings
   vi:
-    app_title: "HỆ THỐNG HỖ TRỢ ĐÁNH GIÁ VÀ CHẤM ĐIỂM TÍN DỤNG"
+    app_title: "MODULE 2: HỆ THỐNG HỖ TRỢ ĐÁNH GIÁ VÀ CHẤM ĐIỂM TÍN DỤNG"
     sidebar_header: "Bảng Điều Khiển"
     system_status: "Trạng thái Engine"
     active_model_run: "Mô hình đang chạy"
@@ -103,6 +114,7 @@ i18n:
     admin_auth_success: "✅ Xác thực thành công! Đã mở quyền truy cập Báo cáo Thẩm định."
     admin_auth_error: "❌ Mật khẩu Chuyên viên không đúng!"
 
+  # English UI Strings
   en:
     app_title: "MODULE 2: CREDIT RISK SCORING AND DECISION SUPPORT SYSTEM"
     sidebar_header: "Control Panel"
@@ -182,7 +194,7 @@ categorical_options:
     "Y": { vi: "Đã từng có nợ xấu", en: "Has Default History" }
 
 # ------------------------------------------------------------------------------
-# SECURITY & ADMIN ACCESS CONTROL
+# SECURITY & ADMIN ACCESS CONTROL PARAMETERS
 # ------------------------------------------------------------------------------
 admin_security:
   passcode: "admin123"
