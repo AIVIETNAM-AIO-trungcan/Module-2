@@ -94,15 +94,12 @@ class CreditScorecardInferencePipeline:
         asset_dir: Path = project_root / "asset"
         asset_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if asset folder contains valid image files
-        has_images: bool = any(
-            f.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif"]
-            for f in asset_dir.glob("*")
-        )
+        # Check if asset folder contains valid mascot image files (specifically capybara_main.png)
+        main_logo: Path = asset_dir / "capybara_main.png"
 
-        if not has_images:
+        if not main_logo.exists():
             print(
-                "🌐 [CLOUD DOWNLOAD] Asset images missing. Downloading asset.zip from Hugging Face Hub..."
+                "🌐 [CLOUD DOWNLOAD] Asset images missing in asset directory. Downloading asset.zip from HF Hub..."
             )
             try:
                 downloaded_zip_path = hf_hub_download(
@@ -111,10 +108,11 @@ class CreditScorecardInferencePipeline:
                     repo_type="dataset",
                 )
                 print(
-                    "📦 [CLOUD DOWNLOAD] Extracting asset files directly to project root..."
+                    "📦 [CLOUD DOWNLOAD] Extracting asset files directly INTO asset directory..."
                 )
                 with zipfile.ZipFile(downloaded_zip_path, "r") as zip_ref:
-                    zip_ref.extractall(project_root)
+                    # FIX: Extract directly into asset_dir since asset.zip has no inner asset/ folder
+                    zip_ref.extractall(asset_dir)
 
                 files_found = os.listdir(asset_dir) if asset_dir.exists() else []
                 print(
