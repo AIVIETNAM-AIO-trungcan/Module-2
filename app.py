@@ -182,7 +182,7 @@ with st.sidebar:
         ui_cfg["i18n"]["en"]["language_select"],
         options=["vi", "en"],
         format_func=lambda x: "Tiếng Việt 🇻🇳" if x == "vi" else "English 🇬🇧",
-        index=0,
+        index=1,
     )
     t: Dict[str, Any] = ui_cfg["i18n"][lang]
 
@@ -210,7 +210,7 @@ with tab_single:
             f"💵 {t['currency_select']}",
             options=["VND", "USD"],
             horizontal=True,
-            index=0,
+            index=1,
             key="currency_unit_selector",
         )
     with cfg_col2:
@@ -221,7 +221,7 @@ with tab_single:
                 t["income_freq_monthly"] if x == "monthly" else t["income_freq_yearly"]
             ),
             horizontal=True,
-            index=0,
+            index=1,
             key="income_freq_selector",
         )
 
