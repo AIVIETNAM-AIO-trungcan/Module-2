@@ -41,6 +41,22 @@ validation:
   cb_person_cred_hist_length:
     min: 0
 
+# 2.1. Tier-1 Data Cleaning Configuration (Outlier Handling)
+cleaning_config:
+  outlier_handling:
+    enabled: true
+    strategy: "drop" # Drop extreme outliers directly to preserve binning monotonicity
+    method: "zscore" # Options: "zscore" or "iqr". Toggle this to switch the mathematical logic used in Python.
+
+    # Mathematical thresholds for the selected method
+    zscore_threshold: 3.0 # Target extreme outliers only (|Z| > 3 represents ~0.3% of normally distributed data)
+    iqr_multiplier: 3.0 # Target extreme outliers (1.5 is standard, 3.0 captures extreme deviations beyond Q1/Q3)
+
+    target_columns:
+      - "person_age"
+      - "person_emp_length"
+      - "cb_person_cred_hist_length"
+
 # 3. Compute new data
 derived_features:
   loan_percent_income_computed:
@@ -89,19 +105,31 @@ features:
     small_bin_threshold: 0.05
     extreme_woe_threshold: 2.0
 
-  # Feature selection rules (IV screening & LASSO)
+  # Feature selection rules (Dual-branch: Baseline Full Features vs. Best Subset)
   selection_config:
-    iv_threshold: 0.02
-    lasso_cv_splits: 10
-    random_state: 42
-    # Add variables here to force exclude them (e.g., ["loan_grade", "loan_int_rate"] for pre-decision context)
-    business_exclude: []
-    # LASSO config
-    lasso_max_iter: 10000
-    lasso_solver: "saga"
-    # penalty; l1_ratio (only for elasticnet)
-    penalty: "l1"
-    l1_ratio: 1.0
+    # Tier 1: Baseline Filters (Information Preservation)
+    min_iv_threshold: 0.02 # Exclude uninformative variables
+    max_iv_threshold: 1 # Set high to retain strong predictors; Tech Lead will manually review for leakage
+    vif_threshold: 5.0 # Max Variance Inflation Factor to drop highly correlated features
+    business_exclude: [] # Add variables here to force exclude them if Tech Lead identifies data leakage
+
+    # Tier 2: Best Subset Selection Method
+    best_subset:
+      enabled: true
+      method: "lasso_cv" # Uses LASSO 1-SE rule for selecting the simplest valid subset
+      lasso_cv_splits: 10
+      random_state: 42
+      lasso_max_iter: 10000
+      lasso_solver: "saga"
+      penalty: "l1"
+      l1_ratio: 1.0
+
+    # Tier 3: Champion Model Auto-Selection Logic (Validation Set Evaluation)
+    champion_selection:
+      # Options: "kolmogorov_smirnov_ks", "roc_auc", "f1_score"
+      primary_metric: "kolmogorov_smirnov_ks" # The main decider for credit risk separation
+      secondary_metric: "roc_auc" # The tie-breaker for overall ranking stability
+      margin_of_equivalence: 0.01 # If the primary metric diff is <= 1%, use the secondary metric
 
 # 5. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
