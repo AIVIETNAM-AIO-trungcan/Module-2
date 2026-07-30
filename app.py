@@ -2,9 +2,9 @@
 Streamlit Credit Risk Scorecard Web Application.
 
 This module acts as the user interface layer for the Credit Scorecard System.
-It enables interactive single-applicant evaluation, batch CSV scoring, dynamic currency
-and income period conversions, Plotly-based score attribution breakdowns (Waterfall Chart),
-and underlying scorecard rule inspection.
+Refactored to meet banking UI/UX compliance standards, streamline batch processing,
+enforce internal underwriter security controls, maintain session state persistence,
+and incorporate interactive mascot risk guidance.
 """
 
 from io import StringIO
@@ -35,10 +35,10 @@ def load_ui_config() -> Dict[str, Any]:
     """Loads and caches user interface localization and layout configurations.
 
     Returns:
-        Dict[str, Any]: Parsed YAML configuration mapping for the UI layout.
+        Dict[str, Any]: Parsed YAML configuration dictionary for the UI layer.
 
     Raises:
-        FileNotFoundError: Intercepted via UI alert if ui_config.yaml is missing.
+        FileNotFoundError: Triggered if ui_config.yaml is missing from the root directory.
     """
     cfg_path: Path = Path("ui_config.yaml")
     if not cfg_path.exists():
@@ -96,7 +96,6 @@ def render_waterfall_chart(score_breakdown: Dict[str, int], title: str) -> None:
     values: List[int] = [int(v) for v in score_breakdown.values()]
     total_score: int = sum(values)
 
-    # Append absolute sum total bar at the right end of chart
     x_data: List[str] = features + ["TOTAL SCORE"]
     y_data: List[int] = values + [total_score]
     measures: List[str] = ["relative"] * len(features) + ["total"]
@@ -125,9 +124,9 @@ def render_waterfall_chart(score_breakdown: Dict[str, int], title: str) -> None:
         xaxis_title="Features",
         yaxis_title="Points Contribution",
         waterfallgap=0.2,
-        height=500,
+        height=450,
         margin=dict(l=20, r=20, t=50, b=80),
-        xaxis=dict(tickangle=-30),
+        xaxis=dict(tickangle=-25),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -171,7 +170,6 @@ tab_single, tab_batch = st.tabs([t["single_tab"], t["batch_tab"]])
 with tab_single:
     st.subheader(t["applicant_info"])
 
-    # Currency and income cycle selection controls
     cfg_col1, cfg_col2 = st.columns(2)
     with cfg_col1:
         currency_unit: str = st.radio(
@@ -198,7 +196,6 @@ with tab_single:
     with st.form("single_scoring_form"):
         col1, col2, col3 = st.columns(3)
 
-        # Reactive defaults and step increments bound to active currency selection
         default_income: int = 25000000 if currency_unit == "VND" else 1000
         default_loan: int = 50000000 if currency_unit == "VND" else 2000
         step_income: int = 1000000 if currency_unit == "VND" else 100
@@ -292,33 +289,35 @@ with tab_single:
             t["btn_predict"], type="primary", use_container_width=True
         )
 
-    # Submission Handler & Evaluation Logic
+    # Single Scoring Submission Handler
     if submit_btn:
         usd_rate: float = ui_cfg["currency"].get("usd_to_vnd_rate", 25000.0)
 
-        # 🧮 Step 1: Normalize Income to Annual USD Standard
+        # Normalize Income to Annual USD Standard
         if income_freq == "monthly":
             annual_income_raw: float = income_input * 12.0
         else:
             annual_income_raw: float = float(income_input)
 
-        if currency_unit == "VND":
-            person_income_usd: float = annual_income_raw / usd_rate
-        else:
-            person_income_usd: float = annual_income_raw
+        person_income_usd: float = (
+            annual_income_raw / usd_rate
+            if currency_unit == "VND"
+            else annual_income_raw
+        )
 
-        # 🧮 Step 2: Normalize Requested Loan Amount to USD
-        if currency_unit == "VND":
-            loan_amnt_usd: float = loan_amt_input / usd_rate
-        else:
-            loan_amnt_usd: float = float(loan_amt_input)
+        # Normalize Requested Loan Amount to USD
+        loan_amnt_usd: float = (
+            loan_amt_input / usd_rate
+            if currency_unit == "VND"
+            else float(loan_amt_input)
+        )
 
-        # 🧮 Step 3: Calculate Derived Feature (Debt-to-Income / Loan Percent Income)
+        # Compute Debt-to-Income Ratio (Loan Percent Income)
         loan_percent_income: float = (
             loan_amnt_usd / person_income_usd if person_income_usd > 0 else 0.0
         )
 
-        # 📦 Step 4: Construct Input DataFrame for Model Inference
+        # Construct single applicant DataFrame for pipeline evaluation
         input_data: pd.DataFrame = pd.DataFrame(
             [
                 {
@@ -339,83 +338,107 @@ with tab_single:
 
         try:
             with st.spinner("Processing prediction..."):
-                result: Dict[str, Any] = pipeline.predict(input_data)
+                # Store output in session state to preserve state across admin passcode unlock reruns
+                st.session_state["scoring_result"] = pipeline.predict(input_data)
+        except Exception as e:
+            st.error(f"❌ Execution Error: {e}")
 
-            st.divider()
+    # Render results section if scoring session state exists
+    if "scoring_result" in st.session_state:
+        result: Dict[str, Any] = st.session_state["scoring_result"]
 
-            # ==================================================================
-            # 1. EVALUATION RESULTS DISPLAY
-            # ==================================================================
-            st.subheader(t["scoring_result"])
+        st.divider()
 
-            decision: str = result["decision"]
-            score: int = result["credit_score"]
-            pd_val: float = result["probability_of_default"]
-            risk_band: str = result["risk_band"]
+        # ------------------------------------------------------------------
+        # 1. PUBLIC EVALUATION RESULTS & MASCOT DISPLAY
+        # ------------------------------------------------------------------
+        st.subheader(t["scoring_result"])
 
-            outcome_cfg: Dict[str, Any] = ui_cfg["mascot"]["outcomes"].get(decision, {})
-            mascot_img: str = outcome_cfg.get(
-                "image", ui_cfg["mascot"]["default_image"]
+        decision: str = result["decision"]
+        score: int = result["credit_score"]
+        pd_val: float = result["probability_of_default"]
+        risk_band: str = result["risk_band"]
+
+        outcome_cfg: Dict[str, Any] = ui_cfg["mascot"]["outcomes"].get(decision, {})
+        mascot_img_path: str = outcome_cfg.get(
+            "image", ui_cfg["mascot"]["default_image"]
+        )
+        dialogue: str = outcome_cfg.get("dialogue", {}).get(lang, "")
+        status_color: str = outcome_cfg.get("status_color", "#6c757d")
+
+        res_col1, res_col2 = st.columns([1, 2.5])
+
+        with res_col1:
+            if Path(mascot_img_path).exists():
+                st.image(mascot_img_path, use_container_width=True)
+            else:
+                st.info("🤖 [Mascot Image Placeholder]")
+
+        with res_col2:
+            st.chat_message("assistant").write(f"**{dialogue}**")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(t["score_label"], f"{score} pts")
+            m2.metric(t["pd_label"], f"{pd_val * 100:.2f}%")
+            m3.metric(t["risk_band_label"], risk_band)
+
+            st.markdown(
+                f"""
+                <div style="background-color: {status_color}; color: white; padding: 12px; border-radius: 8px; text-align: center; font-size: 20px; font-weight: bold; margin-top: 10px;">
+                    {t['decision_label']}: {decision}
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            dialogue: str = outcome_cfg.get("dialogue", {}).get(lang, "")
-            status_color: str = outcome_cfg.get("status_color", "#6c757d")
 
-            res_col1, res_col2 = st.columns([1, 2.5])
+        st.divider()
 
-            with res_col1:
-                if Path(mascot_img).exists():
-                    st.image(mascot_img, use_container_width=True)
-                else:
-                    st.info("🤖 [Mascot Image]")
+        # ------------------------------------------------------------------
+        # 2. INTERNAL UNDERWRITER PORTAL (PASSCODE-PROTECTED GATE)
+        # ------------------------------------------------------------------
+        st.subheader(t["admin_lock_title"])
+        st.caption(t["admin_lock_caption"])
 
-            with res_col2:
-                st.chat_message("assistant").write(f"**{dialogue}**")
-                st.markdown("<br>", unsafe_allow_html=True)
+        # Initialize session state for internal underwriter authentication
+        if "admin_authenticated" not in st.session_state:
+            st.session_state["admin_authenticated"] = False
 
-                m1, m2, m3 = st.columns(3)
-                m1.metric(t["score_label"], f"{score} pts")
-                m2.metric(t["pd_label"], f"{pd_val * 100:.2f}%")
-                m3.metric(t["risk_band_label"], risk_band)
-
-                st.markdown(
-                    f"""
-                    <div style="background-color: {status_color}; color: white; padding: 12px; border-radius: 8px; text-align: center; font-size: 20px; font-weight: bold; margin-top: 10px;">
-                        {t['decision_label']}: {decision}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+        # Render authentication widget if access is locked
+        if not st.session_state["admin_authenticated"]:
+            with st.expander("🔑 " + t["admin_pass_label"], expanded=True):
+                admin_pass_input = st.text_input(
+                    t["admin_pass_label"],
+                    type="password",
+                    placeholder=t["admin_pass_placeholder"],
+                    key="admin_pass_field",
                 )
+                unlock_btn = st.button(t["admin_unlock_btn"], type="secondary")
 
-            st.divider()
+                if unlock_btn:
+                    correct_pass = str(
+                        ui_cfg.get("admin_security", {}).get("passcode", "admin123")
+                    )
+                    if admin_pass_input == correct_pass:
+                        st.session_state["admin_authenticated"] = True
+                        st.rerun()
+                    else:
+                        st.error(t["admin_auth_error"])
 
-            # ==================================================================
-            # 2. WATERFALL SCORE ATTRIBUTION CHART
-            # ==================================================================
+        # Render sensitive attribution charts and rulebooks if authenticated
+        if st.session_state["admin_authenticated"]:
+            st.success("🟢 " + t["admin_auth_success"])
+
+            # --- A. WATERFALL SCORE ATTRIBUTION CHART ---
             score_breakdown: Dict[str, int] = result.get("score_breakdown", {})
             if score_breakdown:
                 render_waterfall_chart(score_breakdown, t["waterfall_breakdown"])
-            else:
-                st.warning(
-                    "⚠️ Unable to render Waterfall Chart due to missing breakdown data."
-                )
 
-            # ==================================================================
-            # 3. SCORECARD RULEBOOK LOOKUP TABLE
-            # ==================================================================
+            # --- B. BANKING SCORECARD RULEBOOK & LOOKUP TABLE ---
             with st.expander(
-                "📊 Scorecard Lookup Table & Scaling Factors", expanded=False
+                "📊 Banking Scorecard Rulebook & Scaling Parameters", expanded=True
             ):
                 scaler: Any = pipeline.score_scaler
-
-                if hasattr(scaler, "scorecard_table"):
-                    raw_table_str: Any = getattr(scaler, "scorecard_table")
-                    if isinstance(raw_table_str, str):
-                        df_scorecard: pd.DataFrame = pd.read_csv(
-                            StringIO(raw_table_str), sep=r"\s+", engine="python"
-                        )
-                        st.dataframe(df_scorecard, use_container_width=True)
-                    elif isinstance(raw_table_str, pd.DataFrame):
-                        st.dataframe(raw_table_str, use_container_width=True)
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Base Score", getattr(scaler, "base_score", 600))
@@ -426,8 +449,14 @@ with tab_single:
                     f"{getattr(scaler, 'factor', 0):.2f} / {getattr(scaler, 'offset', 0):.2f}",
                 )
 
-        except Exception as e:
-            st.error(f"❌ Execution Error: {e}")
+                st.markdown("<br>", unsafe_allow_html=True)
+                if hasattr(scaler, "scorecard_table") and isinstance(
+                    scaler.scorecard_table, pd.DataFrame
+                ):
+                    business_table = scaler.scorecard_table[
+                        ["Feature", "Bin/Category", "Scaled_Points"]
+                    ].copy()
+                    st.dataframe(business_table, use_container_width=True)
 
 # ==============================================================================
 # TAB 2: BATCH APPLICANT SCORING (CSV FILE EVALUATION)
@@ -436,29 +465,29 @@ with tab_batch:
     st.subheader(t["batch_header"])
     st.caption(t["batch_caption"])
 
-    # 1. Provide reference CSV template for download
+    # Reference CSV template for download
     sample_df: pd.DataFrame = pd.DataFrame(
         [
             {
                 "person_age": 30,
-                "person_income": 25000000,
+                "person_income": 25000,
                 "person_home_ownership": "RENT",
                 "person_emp_length": 3.0,
                 "loan_intent": "PERSONAL",
                 "loan_grade": "B",
-                "loan_amnt": 50000000,
+                "loan_amnt": 5000,
                 "loan_int_rate": 11.5,
                 "cb_person_default_on_file": "N",
                 "cb_person_cred_hist_length": 4,
             },
             {
                 "person_age": 45,
-                "person_income": 80000000,
+                "person_income": 80000,
                 "person_home_ownership": "OWN",
                 "person_emp_length": 10.0,
                 "loan_intent": "VENTURE",
                 "loan_grade": "A",
-                "loan_amnt": 100000000,
+                "loan_amnt": 15000,
                 "loan_int_rate": 7.5,
                 "cb_person_default_on_file": "N",
                 "cb_person_cred_hist_length": 12,
@@ -466,31 +495,18 @@ with tab_batch:
         ]
     )
 
-    col_batch_cfg1, col_batch_cfg2 = st.columns([2, 1])
-    with col_batch_cfg2:
-        csv_template: bytes = sample_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label=t["download_template_btn"],
-            data=csv_template,
-            file_name="credit_scorecard_batch_template.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+    csv_template: bytes = sample_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label=t["download_template_btn"],
+        data=csv_template,
+        file_name="credit_scorecard_batch_template.csv",
+        mime="text/csv",
+        use_container_width=False,
+    )
 
-    # 2. Currency unit selector for batch dataset
-    with col_batch_cfg1:
-        batch_currency: str = st.radio(
-            t["batch_currency_label"],
-            options=["VND", "USD"],
-            format_func=lambda x: (
-                t["batch_currency_vnd"] if x == "VND" else t["batch_currency_usd"]
-            ),
-            horizontal=True,
-            index=0,
-            key="batch_currency_selector",
-        )
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # 3. CSV File Upload Widget
+    # CSV File Upload Widget
     uploaded_file: Any = st.file_uploader(
         t["uploader_label"],
         type=["csv"],
@@ -499,37 +515,27 @@ with tab_batch:
 
     if uploaded_file is not None:
         try:
-            # Parse uploaded CSV file
             raw_batch_df: pd.DataFrame = pd.read_csv(uploaded_file)
             st.success(t["upload_success"].format(count=len(raw_batch_df)))
 
             with st.expander(t["preview_input_title"], expanded=False):
                 st.dataframe(raw_batch_df.head(10), use_container_width=True)
 
-            # Trigger batch scoring pipeline execution
+            # Trigger batch evaluation pipeline
             if st.button(
                 t["btn_run_batch"],
                 type="primary",
                 use_container_width=True,
             ):
-                usd_rate: float = ui_cfg["currency"].get("usd_to_vnd_rate", 25000.0)
                 batch_input: pd.DataFrame = raw_batch_df.copy()
 
-                # Normalize monetary inputs to USD/Year standard if input is in VND/Monthly
-                if batch_currency == "VND":
-                    batch_input["person_income"] = (
-                        batch_input["person_income"] * 12.0
-                    ) / usd_rate
-                    batch_input["loan_amnt"] = batch_input["loan_amnt"] / usd_rate
-
                 with st.spinner(t["batch_spinner"]):
-                    # Execute prediction pipeline over dataframe
                     batch_results: pd.DataFrame = pipeline.predict(batch_input)
 
                 st.divider()
                 st.subheader(t["batch_results_header"])
 
-                # Overall Batch Summary Metrics
+                # Batch Summary Metrics Display
                 total_records: int = len(batch_results)
                 approved_cnt: int = int((batch_results["decision"] == "APPROVED").sum())
                 review_cnt: int = int(
@@ -552,7 +558,7 @@ with tab_batch:
                     f"{rejected_cnt} ({rejected_cnt/total_records:.1%})",
                 )
 
-                # Multiselect Decision Filter Widget
+                # Underwriting Decision Filter Widget
                 filter_decision: List[str] = st.multiselect(
                     t["filter_label"],
                     options=["APPROVED", "MANUAL_REVIEW", "REJECTED"],
@@ -563,7 +569,7 @@ with tab_batch:
                     batch_results["decision"].isin(filter_decision)
                 ]
 
-                # Display Results Dataframe
+                # Result Dataframe Display Options
                 display_cols: List[str] = [
                     "credit_score",
                     "probability_of_default",
@@ -573,13 +579,12 @@ with tab_batch:
                     "person_income",
                     "loan_amnt",
                 ]
-                # Fallback in case optional metadata columns are omitted
                 available_cols: List[str] = [
                     col for col in display_cols if col in filtered_df.columns
                 ]
                 st.dataframe(filtered_df[available_cols], use_container_width=True)
 
-                # Export Batch Results to CSV
+                # Export Batch Evaluation Results to CSV
                 result_csv: bytes = batch_results.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=t["export_btn"],

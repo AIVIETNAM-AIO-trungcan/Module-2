@@ -3,14 +3,14 @@
 # ==============================================================================
 # Description: Configuration schema for localization (i18n), layout parameters,
 #              currency rates, and UI mascot responses.
-# Maintainer : Group 05 - FinTech Innovation
+# Maintainer : FinTech Innovation Group
 # ==============================================================================
 
 project_info:
-  title: "Credit Risk Scorecard Engine"
-  subtitle: "Automated Credit Risk Assessment & Scoring System"
-  team_name: "Group 05 - FinTech Innovation"
-  logo_path: "asset/images/team_logo.png"
+  title: "Module 2: Credit Risk Scoring and Decision Support System"
+  subtitle: "Automated Credit Risk Assessment & Decision Support System"
+  team_name: "Porsche_Club"
+  logo_path: "asset/capybara_main.png"
 
 currency:
   symbol_vnd: "VND"
@@ -20,25 +20,25 @@ currency:
   decimal_separator: ","
 
 mascot:
-  default_image: "asset/images/mascot_neutral.png"
+  default_image: "asset/capybara_main.png"
   outcomes:
     APPROVED:
-      image: "asset/images/mascot_approved.png"
+      image: "asset/capybara_success.png"
       status_color: "#28a745"
       dialogue:
         vi: "🎉 Chúc mừng! Khoản vay của bạn đã được TỰ ĐỘNG PHÊ DUYỆT!"
         en: "🎉 Congratulations! Your loan application is AUTOMATICALLY APPROVED!"
     MANUAL_REVIEW:
-      image: "asset/images/mascot_review.png"
+      image: "asset/capybara_confuse.png"
       status_color: "#ffc107"
       dialogue:
-        vi: "🧐 Hồ sơ của bạn cần được chuyên viên xem xét thêm nhé!"
+        vi: "🧐 Hồ sơ của bạn cần được chuyên viên thẩm định xem xét thêm nhé!"
         en: "🧐 Your application requires further verification by a credit officer!"
     REJECTED:
-      image: "asset/images/mascot_rejected.png"
+      image: "asset/capybara_refuse.png"
       status_color: "#dc3545"
       dialogue:
-        vi: "😔 Rất tiếc, điểm tín dụng hiện tại chưa đủ điều kiện vay."
+        vi: "😔 Rất tiếc, điểm tín dụng hiện tại chưa đủ điều kiện cấp hạn mức."
         en: "😔 Unfortunately, your current credit risk profile exceeds our risk threshold."
 
 # ------------------------------------------------------------------------------
@@ -46,8 +46,7 @@ mascot:
 # ------------------------------------------------------------------------------
 i18n:
   vi:
-    # Sidebar & Global Layout
-    app_title: "HỆ THỐNG ĐÁNH GIÁ VÀ CHẤM ĐIỂM TÍN DỤNG"
+    app_title: "HỆ THỐNG HỖ TRỢ ĐÁNH GIÁ VÀ CHẤM ĐIỂM TÍN DỤNG"
     sidebar_header: "Bảng Điều Khiển"
     system_status: "Trạng thái Engine"
     active_model_run: "Mô hình đang chạy"
@@ -55,7 +54,6 @@ i18n:
     single_tab: "👤 Chấm điểm Cá nhân"
     batch_tab: "📁 Chấm điểm Hàng loạt (CSV)"
 
-    # Single Applicant Scoring (Tab 1)
     applicant_info: "Thông tin Hồ sơ Khách hàng"
     scoring_result: "Kết quả Đánh giá & Thẩm định"
     waterfall_breakdown: "📊 Bóc tách Điểm số Chi tiết (Waterfall Chart)"
@@ -79,13 +77,9 @@ i18n:
     risk_band_label: "Phân hạng Rủi ro"
     btn_predict: "🚀 Tiến hành Chấm điểm"
 
-    # Batch CSV Scoring (Tab 2)
     batch_header: "📁 Chấm Điểm Tín Dụng Hàng Loạt (Tải lên CSV)"
     batch_caption: "Tải lên tệp CSV chứa danh sách hồ sơ khách hàng để thực hiện đánh giá tự động và phân loại rủi ro hàng loạt."
     download_template_btn: "📥 Tải File Mẫu CSV"
-    batch_currency_label: "💵 Đơn vị tiền tệ trong File CSV:"
-    batch_currency_vnd: "VND (Theo Tháng)"
-    batch_currency_usd: "USD (Theo Năm)"
     uploader_label: "Kéo thả hoặc chọn tệp CSV hồ sơ khách hàng:"
     uploader_help: "Lưu ý: Tệp CSV tải lên phải chứa đầy đủ các cột thuộc tính theo đúng định dạng file mẫu."
     upload_success: "✅ Tải thành công **{count}** hồ sơ khách hàng."
@@ -101,9 +95,16 @@ i18n:
     export_btn: "💾 Xuất Báo Cáo Kết Quả (.CSV)"
     error_csv: "❌ Có lỗi xảy ra khi xử lý tệp CSV: {error}"
 
+    admin_lock_title: "🔒 Khu Vực Thẩm Định Nội Bộ (Chỉ dành cho Chuyên viên Rủi ro)"
+    admin_lock_caption: "Nhập mật khẩu Chuyên viên để mở bóc tách Waterfall và Bảng điểm quy đổi chi tiết."
+    admin_pass_label: "Mật khẩu Chuyên viên Rủi ro:"
+    admin_pass_placeholder: "Nhập passcode..."
+    admin_unlock_btn: "🔓 Mở Khóa Dữ Liệu Nội Bộ"
+    admin_auth_success: "✅ Xác thực thành công! Đã mở quyền truy cập Báo cáo Thẩm định."
+    admin_auth_error: "❌ Mật khẩu Chuyên viên không đúng!"
+
   en:
-    # Sidebar & Global Layout
-    app_title: "CREDIT RISK SCORECARD INFERENCE SYSTEM"
+    app_title: "MODULE 2: CREDIT RISK SCORING AND DECISION SUPPORT SYSTEM"
     sidebar_header: "Control Panel"
     system_status: "Engine Diagnostics"
     active_model_run: "Active Run"
@@ -111,7 +112,6 @@ i18n:
     single_tab: "👤 Single Applicant"
     batch_tab: "📁 Batch CSV Scoring"
 
-    # Single Applicant Scoring (Tab 1)
     applicant_info: "Applicant Demographics"
     scoring_result: "Assessment & Scoring Results"
     waterfall_breakdown: "📊 Score Waterfall Breakdown"
@@ -135,13 +135,9 @@ i18n:
     risk_band_label: "Risk Band"
     btn_predict: "🚀 Calculate Credit Score"
 
-    # Batch CSV Scoring (Tab 2)
     batch_header: "📁 Batch Applicant Scoring (CSV Upload)"
     batch_caption: "Upload a CSV file containing applicant profiles to perform automated batch scoring and risk classification."
     download_template_btn: "📥 Download CSV Template"
-    batch_currency_label: "💵 Currency Unit in CSV File:"
-    batch_currency_vnd: "VND (Monthly)"
-    batch_currency_usd: "USD (Yearly)"
     uploader_label: "Drag and drop or select an applicant CSV file:"
     uploader_help: "Note: The uploaded CSV file must contain all baseline feature attributes matching the template."
     upload_success: "✅ Successfully loaded **{count}** applicant records."
@@ -156,6 +152,14 @@ i18n:
     filter_label: "Filter results by Underwriting Decision:"
     export_btn: "💾 Export Full Evaluation Report (.CSV)"
     error_csv: "❌ An error occurred while processing the CSV file: {error}"
+
+    admin_lock_title: "🔒 Internal Underwriter Portal (Restricted Access)"
+    admin_lock_caption: "Enter Underwriter Passcode to unlock score attribution charts and detailed scorecard lookup tables."
+    admin_pass_label: "Risk Officer Passcode:"
+    admin_pass_placeholder: "Enter passcode..."
+    admin_unlock_btn: "🔓 Unlock Internal Data"
+    admin_auth_success: "✅ Authentication successful! Underwriter access granted."
+    admin_auth_error: "❌ Invalid Risk Officer Passcode!"
 
 # ------------------------------------------------------------------------------
 # CATEGORICAL FEATURE LOCALIZATION MAPPINGS
@@ -176,3 +180,9 @@ categorical_options:
   cb_person_default_on_file:
     "N": { vi: "Chưa từng có nợ xấu", en: "No Default History" }
     "Y": { vi: "Đã từng có nợ xấu", en: "Has Default History" }
+
+# ------------------------------------------------------------------------------
+# SECURITY & ADMIN ACCESS CONTROL
+# ------------------------------------------------------------------------------
+admin_security:
+  passcode: "admin123"

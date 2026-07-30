@@ -113,7 +113,7 @@ class CreditScorecardInferencePipeline:
     def _ensure_artifacts_exist(self) -> None:
         models_dir: Path = self.active_run_dir / "models"
         model_name: str = self.config["model"]["logistic_regression"].get(
-            "model_file_name", "baseline_logistic_model.pkl"
+            "model_file_name", "champion_logistic_model.pkl"
         )
 
         required_artifacts: List[Path] = [
@@ -138,9 +138,15 @@ class CreditScorecardInferencePipeline:
         scaler_path: Path = models_dir / "score_scaler.pkl"
 
         model_name: str = self.config["model"]["logistic_regression"].get(
-            "model_file_name", "baseline_logistic_model.pkl"
+            "model_file_name", "champion_logistic_model.pkl"
         )
         model_path: Path = models_dir / model_name
+
+        if (
+            not model_path.exists()
+            and (models_dir / "baseline_logistic_model.pkl").exists()
+        ):
+            model_path = models_dir / "baseline_logistic_model.pkl"
 
         for artifact_path in [cleaner_path, woe_path, scaler_path, model_path]:
             if not artifact_path.exists():
