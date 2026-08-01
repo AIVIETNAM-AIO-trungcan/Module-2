@@ -1,35 +1,22 @@
 """
 Feature Selection Module for Credit Scoring
 -------------------------------------------
-This module implements a dynamic dual-branch feature selection pipeline:
-1. IV & Business Screening: Drops uninformative (low IV), suspicious (high IV leakage),
-   and business-excluded features.
-2. VIF Screening: Iteratively removes multicollinear features to form the "Baseline" subset.
-3. LASSO Regression CV: Applies the optimal `lambda.1se` rule to extract the "Best Subset"
-   from the Baseline features.
+This module implements a dynamic tri-branch feature selection pipeline
+to match the candidate evaluation strategy from Notebook 4:
 
-*Outputs both Baseline and Best Subset features for Champion vs. Challenger model benchmarking.*
+1. Model 1 (IV-screened full): Retains all features passing IV screening (Benchmark).
+2. Intermediate (Pre-decision full financial): Removes post-decision features (e.g. loan_grade) to prevent data leakage.
+3. Model 2 (Explainable pre-decision): Removes redundant financial variables, keeping only the computed ratio.
 """
 
-import warnings
-import numpy as np
 import pandas as pd
-from statsmodels.stats.outliers_influence import variance_inflation_factor
-from typing import List, Dict, Any, Optional
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import roc_auc_score
-from sklearn.exceptions import ConvergenceWarning
+from typing import List, Dict, Any
 
 
 class CreditFeatureSelector:
     """
-    Executes automated feature selection to prevent multicollinearity
-    and retain highly predictive variables. Supports dual-branch output
-    (Baseline vs. Best Subset) for downstream model benchmarking.
+    Executes an explainable, rule-based feature selection process.
+    Supports tri-branch output (Model 1, Intermediate, Model 2) for downstream CV benchmarking.
     """
 
     def __init__(self, selection_config: Dict[str, Any]) -> None:
@@ -39,291 +26,190 @@ class CreditFeatureSelector:
         Args:
             selection_config (Dict[str, Any]): Dictionary containing feature selection rules.
         """
-        # Tier 1: Baseline Filters
+        # Tier 1: Baseline Filters (IV Screening)
         self.min_iv: float = selection_config.get("min_iv_threshold", 0.02)
-        self.max_iv: float = selection_config.get("max_iv_threshold", 0.50)
-        self.vif_threshold: float = selection_config.get("vif_threshold", 5.0)
-        self.business_exclude: List[str] = selection_config.get("business_exclude", [])
+        self.max_iv: float = selection_config.get("max_iv_threshold", 1.00)
 
-        # Tier 2: Best Subset (LASSO) Filters
-        subset_cfg: Dict[str, Any] = selection_config.get("best_subset", {})
-        self.use_best_subset: bool = subset_cfg.get("enabled", True)
-        self.cv_splits: int = subset_cfg.get("lasso_cv_splits", 10)
-        self.random_state: int = subset_cfg.get("random_state", 42)
-        self.lasso_max_iter: int = subset_cfg.get("lasso_max_iter", 10000)
-        self.lasso_solver: str = subset_cfg.get("lasso_solver", "saga")
-        self.penalty: str = subset_cfg.get("penalty", "l1").lower()
-        self.l1_ratio: float = subset_cfg.get("l1_ratio", 1.0)
-
-        if self.penalty not in ["l1", "elasticnet"]:
-            raise ValueError(
-                f"[CRITICAL] Penalty '{self.penalty}' is not supported for Feature Selection. "
-                "Use 'l1' or 'elasticnet'."
-            )
+        # Tier 2: Explainable Subset Rules (Business & Redundancy Exclusion)
+        explainable_cfg: Dict[str, Any] = selection_config.get("explainable_rules", {})
+        self.use_explainable_rules: bool = explainable_cfg.get("enabled", True)
+        self.post_decision_features: List[str] = explainable_cfg.get(
+            "post_decision_features", []
+        )
+        self.redundancy_drop: List[str] = explainable_cfg.get("redundancy_drop", [])
+        self.redundancy_keep: str = explainable_cfg.get("redundancy_keep", "")
 
         # Registries
         self.baseline_features_: List[str] = []
-        self.subset_features_: List[str] = []
+        self.candidate_feature_sets_: Dict[str, List[str]] = {}
         self.audit_report_: Dict[str, Any] = {}
 
-    def _apply_vif_screening(self, X: pd.DataFrame, features: List[str]) -> List[str]:
+    def get_candidate_feature_sets(self) -> Dict[str, List[str]]:
         """
-        Iteratively calculates Variance Inflation Factor (VIF) and removes the feature
-        with the highest VIF until all features are below the threshold.
+        Generates the 3 distinct feature sets based on business rules for Model Comparison.
+        Must be called after IV screening has populated self.baseline_features_.
         """
-        retained_features = features.copy()
+        if not self.baseline_features_:
+            raise ValueError(
+                "[ERROR] Must fit the selector before generating candidate sets."
+            )
 
-        while True:
-            if not retained_features:
-                break
+        # 1. Model 1 - Benchmark Full (No rules applied, only IV screened)
+        model_1_features = self.baseline_features_.copy()
 
-            X_eval = X[retained_features].astype(float)
+        # 2. Intermediate Model - Pre-decision (Removes data leakage features like loan_grade)
+        model_intermediate_features = [
+            f for f in model_1_features if f not in self.post_decision_features
+        ]
 
-            # Bypass statsmodels.api to avoid environment dependency crashes
-            X_with_const = X_eval.copy()
-            X_with_const.insert(0, "const", 1.0)
+        # 3. Model 2 - Explainable (Removes redundant financial variables like raw income/loan_amnt)
+        model_2_features = [
+            f for f in model_intermediate_features if f not in self.redundancy_drop
+        ]
 
-            vif_data = []
-            cols = X_with_const.columns
+        self.candidate_feature_sets_ = {
+            "model_1_iv_screened_full": model_1_features,
+            "model_intermediate_predecision_full_financial": model_intermediate_features,
+            "model_2_explainable_predecision": model_2_features,
+        }
 
-            for i in range(X_with_const.shape[1]):
-                if cols[i] == "const":
-                    continue
-                try:
-                    # Suppress invalid value warnings from statsmodels internally
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        vif_val = variance_inflation_factor(X_with_const.values, i)
-                except Exception:
-                    vif_val = np.inf
-                vif_data.append((cols[i], vif_val))
-
-            if not vif_data:
-                break
-
-            vif_df = pd.DataFrame(vif_data, columns=["Feature", "VIF"])
-            max_vif_row = vif_df.loc[vif_df["VIF"].idxmax()]
-
-            if max_vif_row["VIF"] > self.vif_threshold:
-                retained_features.remove(max_vif_row["Feature"])
-            else:
-                break
-
-        return retained_features
-
-    def _make_lasso_pipeline(self, C: float) -> Pipeline:
-        """
-        Creates a scikit-learn Pipeline with a StandardScaler and LogisticRegression.
-        """
-        l1_ratio_val: Optional[float] = (
-            self.l1_ratio if self.penalty == "elasticnet" else None
-        )
-
-        return Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                (
-                    "lasso",
-                    LogisticRegression(
-                        penalty=self.penalty,
-                        solver=self.lasso_solver,
-                        C=C,
-                        l1_ratio=l1_ratio_val,
-                        max_iter=self.lasso_max_iter,
-                        random_state=self.random_state,
-                    ),
-                ),
-            ]
-        )
+        return self.candidate_feature_sets_
 
     def fit_transform(
         self, X_woe: pd.DataFrame, y: pd.Series, iv_scores: Dict[str, float]
     ) -> Dict[str, pd.DataFrame]:
         """
-        Executes IV, Business, VIF, and LASSO screening to generate Baseline and Best Subset features.
+        Executes IV screening and rule-based business logic to generate 3 Candidate DataFrames.
 
         Args:
             X_woe (pd.DataFrame): Training data encoded with Weight of Evidence (WOE) values.
             y (pd.Series): Target labels (binary: 0 or 1).
-            iv_scores (Dict[str, float]): Information Value mapping.
+            iv_scores (Dict[str, float]): Information Value mapping from OptBinning.
 
         Returns:
-            Dict[str, pd.DataFrame]: Dictionary containing 'baseline' and 'subset' DataFrames.
+            Dict[str, pd.DataFrame]: Dictionary containing dataframes for 'model_1', 'intermediate', and 'model_2'.
         """
         print("\n" + "=" * 80)
-        print("🎯 [FEATURE SELECTION] INITIATING DUAL-BRANCH SELECTION PIPELINE")
+        print("🎯 [FEATURE SELECTION] INITIATING EXPLAINABLE TRI-BRANCH PIPELINE")
         print("=" * 80)
 
         # ----------------------------------------------------------------------
-        # PHASE 1: IV SCREENING & BUSINESS EXCLUSION
+        # PHASE 1: IV SCREENING -> YIELDS BASELINE FEATURES
         # ----------------------------------------------------------------------
-        candidate_features: List[str] = []
-        dropped_business: List[str] = []
+        print(
+            f"  -> Phase 1: Running IV Screening (Threshold: {self.min_iv} <= IV <= {self.max_iv})..."
+        )
+
         dropped_iv: List[str] = []
+        dropped_constant: List[str] = []
+        self.baseline_features_ = []
 
         for feat, iv in iv_scores.items():
-            if feat in self.business_exclude:
-                dropped_business.append(feat)
+            if feat not in X_woe.columns:
                 continue
 
-            if (
-                iv < self.min_iv
-                or iv > self.max_iv
-                or X_woe[feat].nunique(dropna=False) <= 1
-            ):
+            # Drop if feature has no variance (Constant WOE)
+            if X_woe[feat].nunique(dropna=False) <= 1:
+                dropped_constant.append(feat)
+                continue
+
+            # Drop if feature falls outside IV bounds
+            if iv < self.min_iv or iv > self.max_iv:
                 dropped_iv.append(feat)
                 continue
 
-            candidate_features.append(feat)
+            self.baseline_features_.append(feat)
 
-        if not candidate_features:
-            raise ValueError(
-                "[CRITICAL] No features passed the initial IV/Business screening."
-            )
+        if not self.baseline_features_:
+            raise ValueError("[CRITICAL] No features passed the initial IV screening.")
 
-        # ----------------------------------------------------------------------
-        # PHASE 2: VIF SCREENING (MULTICOLLINEARITY) -> YIELDS BASELINE FEATURES
-        # ----------------------------------------------------------------------
+        print(f"     * [AUDIT] Dropped by Constant WOE : {dropped_constant}")
+        print(f"     * [AUDIT] Dropped by IV Threshold : {dropped_iv}")
         print(
-            f"  -> Phase 1 & 2: Running VIF Screening (Threshold <= {self.vif_threshold})..."
-        )
-        self.baseline_features_ = self._apply_vif_screening(X_woe, candidate_features)
-
-        dropped_vif = [
-            f for f in candidate_features if f not in self.baseline_features_
-        ]
-
-        print(f"     * [AUDIT] Dropped by Business Rules : {dropped_business}")
-        print(f"     * [AUDIT] Dropped by IV Thresholds  : {dropped_iv}")
-        print(f"     * [AUDIT] Dropped by VIF (> {self.vif_threshold}) : {dropped_vif}")
-        print(
-            f"     * [BASELINE] Features Retained      : {len(self.baseline_features_)}"
+            f"     * [BASELINE] Features Retained    : {len(self.baseline_features_)}"
         )
 
-        X_baseline: pd.DataFrame = X_woe[self.baseline_features_].copy()
-        y_array: np.ndarray = y.to_numpy()
-
         # ----------------------------------------------------------------------
-        # PHASE 3: LASSO CROSS-VALIDATION -> YIELDS BEST SUBSET FEATURES
+        # PHASE 2: EXPLAINABLE BUSINESS RULES -> YIELDS CANDIDATE SETS
         # ----------------------------------------------------------------------
-        self.subset_features_ = self.baseline_features_.copy()
-        dropped_lasso: List[str] = []
-        C_1se: float = 1.0
-
-        if self.use_best_subset:
-            Cs: np.ndarray = np.logspace(-4, 2, 35)
-            cv = StratifiedKFold(
-                n_splits=self.cv_splits, shuffle=True, random_state=self.random_state
+        if self.use_explainable_rules:
+            print(
+                f"\n  -> Phase 2: Applying Explainable Business Rules for Pre-Decision Models..."
             )
-            auc_matrix: np.ndarray = np.zeros((len(Cs), self.cv_splits))
+            candidate_sets = self.get_candidate_feature_sets()
 
             print(
-                f"\n  -> Phase 3: Running LASSO Challenger with {self.cv_splits}-Fold CV (1-SE Rule)..."
+                f"     * [AUDIT] Dropped Post-Decision (Leakage) : {self.post_decision_features}"
             )
-
-            for fold_idx, (train_idx, val_idx) in enumerate(
-                cv.split(X_baseline, y_array)
-            ):
-                X_train_fold, y_train_fold = (
-                    X_baseline.iloc[train_idx],
-                    y_array[train_idx],
-                )
-                X_val_fold, y_val_fold = X_baseline.iloc[val_idx], y_array[val_idx]
-
-                for c_idx, C in enumerate(Cs):
-                    pipe = self._make_lasso_pipeline(C)
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore", category=FutureWarning)
-                        warnings.filterwarnings("ignore", category=UserWarning)
-                        pipe.fit(X_train_fold, y_train_fold)
-
-                    probs: np.ndarray = pipe.predict_proba(X_val_fold)[:, 1]
-                    auc_matrix[c_idx, fold_idx] = roc_auc_score(y_val_fold, probs)
-
-            mean_auc: np.ndarray = np.mean(auc_matrix, axis=1)
-            se_auc: np.ndarray = np.std(auc_matrix, axis=1, ddof=1) / np.sqrt(
-                self.cv_splits
-            )
-
-            best_idx: int = int(np.argmax(mean_auc))
-            threshold_1se: float = mean_auc[best_idx] - se_auc[best_idx]
-
-            C_1se_val: Optional[float] = None
-            for c_val, auc_val in zip(Cs, mean_auc):
-                if auc_val >= threshold_1se:
-                    C_1se_val = c_val
-                    break
-
-            C_1se = C_1se_val if C_1se_val is not None else Cs[best_idx]
-
-            # Extract Final Coefficients
-            final_pipe = self._make_lasso_pipeline(C_1se)
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore")
-                final_pipe.fit(X_baseline, y_array)
-
-            coefs: np.ndarray = final_pipe.named_steps["lasso"].coef_[0]
-            self.subset_features_ = [
-                feat
-                for feat, coef in zip(self.baseline_features_, coefs)
-                if abs(coef) > 1e-8
-            ]
-            dropped_lasso = [
-                f for f in self.baseline_features_ if f not in self.subset_features_
-            ]
-
-            if not self.subset_features_:
-                print(
-                    "  -> [WARNING] LASSO dropped all features. Falling back to Baseline candidates."
-                )
-                self.subset_features_ = self.baseline_features_.copy()
-                dropped_lasso = []
-
-            print(f"     * [AUDIT] Dropped by LASSO (Beta=0) : {dropped_lasso}")
             print(
-                f"     * [CHALLENGER] Best Subset Retained : {len(self.subset_features_)}"
+                f"     * [AUDIT] Dropped Redundant Financial     : {self.redundancy_drop}"
             )
+            print(
+                f"     * [CANDIDATE 1] Model 1 Retained          : {len(candidate_sets['model_1_iv_screened_full'])} features"
+            )
+            print(
+                f"     * [CANDIDATE 2] Intermediate Retained     : {len(candidate_sets['model_intermediate_predecision_full_financial'])} features"
+            )
+            print(
+                f"     * [CANDIDATE 3] Model 2 Retained          : {len(candidate_sets['model_2_explainable_predecision'])} features"
+            )
+        else:
+            print(
+                "\n  -> Phase 2: Explainable Rules disabled. All branches identical to Baseline."
+            )
+            base_set = self.baseline_features_.copy()
+            self.candidate_feature_sets_ = {
+                "model_1_iv_screened_full": base_set,
+                "model_intermediate_predecision_full_financial": base_set,
+                "model_2_explainable_predecision": base_set,
+            }
 
         # ----------------------------------------------------------------------
         # MLOPS AUDIT REGISTRY
         # ----------------------------------------------------------------------
         self.audit_report_ = {
             "initial_features": list(X_woe.columns),
-            "business_excluded_features": dropped_business,
             "iv_dropped_features": dropped_iv,
-            "vif_dropped_features": dropped_vif,
+            "constant_woe_dropped": dropped_constant,
             "baseline_features": self.baseline_features_,
-            "lasso_dropped_features": dropped_lasso,
-            "subset_features": self.subset_features_,
-            "lasso_c_1se_value": float(C_1se),
+            "post_decision_dropped": (
+                self.post_decision_features if self.use_explainable_rules else []
+            ),
+            "redundancy_dropped": (
+                self.redundancy_drop if self.use_explainable_rules else []
+            ),
+            "candidate_sets": self.candidate_feature_sets_,
         }
 
-        return {
-            "baseline": X_woe[self.baseline_features_].copy(),
-            "subset": X_woe[self.subset_features_].copy(),
-        }
+        # Generate the mapped DataFrames for output
+        output_dfs = {}
+        for model_key, features in self.candidate_feature_sets_.items():
+            output_dfs[model_key] = X_woe[features].copy()
+
+        return output_dfs
 
     def transform(self, X_woe: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
-        Filters the DataFrame into the Baseline and Best Subset feature lists.
+        Filters the DataFrame into the 3 candidate feature lists.
 
         Args:
             X_woe (pd.DataFrame): Inference data encoded with WOE values.
 
         Returns:
-            Dict[str, pd.DataFrame]: Sub-setted DataFrames matching the dual-branch output.
+            Dict[str, pd.DataFrame]: Sub-setted DataFrames matching the tri-branch output.
         """
-        missing_base = [
-            col for col in self.baseline_features_ if col not in X_woe.columns
-        ]
-        missing_sub = [col for col in self.subset_features_ if col not in X_woe.columns]
-
-        if missing_base or missing_sub:
-            raise KeyError(
-                f"[CRITICAL] Missing selected features in validation dataset."
+        if not self.candidate_feature_sets_:
+            raise RuntimeError(
+                "[CRITICAL] Selector has not been fitted. Call fit_transform first."
             )
 
-        return {
-            "baseline": X_woe[self.baseline_features_].copy(),
-            "subset": X_woe[self.subset_features_].copy(),
-        }
+        output_dfs = {}
+        for model_key, features in self.candidate_feature_sets_.items():
+            missing_cols = [col for col in features if col not in X_woe.columns]
+            if missing_cols:
+                raise KeyError(
+                    f"[CRITICAL] Missing features for {model_key} in validation/test dataset: {missing_cols}"
+                )
+            output_dfs[model_key] = X_woe[features].copy()
+
+        return output_dfs

@@ -10,12 +10,17 @@
 
 # 1. Define raw data file and dataset splitting parameters
 data:
-  # The raw dataset file name stored insided the data/raw folder
+  # The raw dataset file name stored inside the data/raw folder
   raw_file_name: "credit_risk_dataset.csv"
 
+  # PREPROCESSING TOGGLE:
+  # "notebook_match" : Hard-drops legacy anomalies before splitting to match original Jupyter Notebook exactly (31,679 rows).
+  # "mlops_optimized": Retains full dataset, relies on Z-score/IQR capping and OptBinning 'Missing' bins for robust production.
+  preprocessing_mode: "notebook_match"
+
   split_params:
-    test_size: 0.2 # Percent of data saved for final testing (20%)
-    val_size: 0.16 # Percent of data saved for validation: 16% total data (equals 20% of remaining train data)
+    test_size: 0.20 # Percent of data saved for final testing (20%)
+    cv_folds: 10 # Number of folds for Stratified Cross-Validation on the Train set
     random_state: 42 # Controls shuffling to ensure repeatable splits
     stratify: true # Keeps the balance of bad customers equal across splits
 
@@ -24,20 +29,15 @@ validation:
   person_age:
     min: 18
     max: 99
-
   person_income:
     min: 1
-
   person_emp_length:
     min: 0
     max: 99
-
   loan_amnt:
     min: 1
-
   loan_int_rate:
     min: 0
-
   cb_person_cred_hist_length:
     min: 0
 
@@ -45,12 +45,12 @@ validation:
 cleaning_config:
   outlier_handling:
     enabled: true
-    strategy: "capping" # Changed from "drop" to "capping" to preserve training volume
-    method: "zscore" # Options: "zscore" or "iqr". Toggle this to switch the mathematical logic used in Python.
+    strategy: "capping" # Preserves training volume by capping instead of dropping
+    method: "zscore" # Options: "zscore" or "iqr"
 
     # Mathematical thresholds for the selected method
-    zscore_threshold: 3.0 # Target extreme outliers only (|Z| > 3 represents ~0.3% of normally distributed data)
-    iqr_multiplier: 3.0 # Target extreme outliers (1.5 is standard, 3.0 captures extreme deviations beyond Q1/Q3)
+    zscore_threshold: 3.0 # Target extreme outliers only (|Z| > 3)
+    iqr_multiplier: 3.0 # Target extreme outliers (beyond Q1/Q3)
 
     target_columns:
       - "person_age"
@@ -71,14 +71,14 @@ derived_features:
 
 # 4. Define analytical feature groupings for the pipeline
 features:
-  # Columns containing continious numbers to be cleaned and binned
+  # Columns containing continuous numbers to be cleaned and binned
   numerical:
     - "person_age"
     - "person_income"
     - "person_emp_length"
     - "loan_amnt"
     - "loan_int_rate"
-    - "loan_percent_income_computed"
+    - "loan_percent_income" # <--- UPDATED: Using raw feature to match Notebook
     - "cb_person_cred_hist_length"
 
   # Column containing text categories to be cleaned and mapped to WoE
@@ -95,52 +95,52 @@ features:
     divergence: "iv"
     max_n_prebins: 20
     min_prebin_size: 0.05
-    max_n_bins: 5 # Strict Tech Lead Rule: Maximum 5 bins per feature for stability
+    max_n_bins: 6 # <--- UPDATED: Increased from 5 to 6 to match Notebook
     monotonic_trend: "auto"
-    # Manual overrides for specific columns
-    default_bins: 5
-    person_emp_length: 4
+    # Manual overrides for specific columns removed to ensure uniformity
 
   # Settings for WOE validation and diagnostics
   woe_diagnostics:
     small_bin_threshold: 0.05
     extreme_woe_threshold: 2.0
 
-  # Feature selection rules (Dual-branch: Baseline Full Features vs. Best Subset)
+  # Feature selection rules
   selection_config:
     # Tier 1: Baseline Filters (Information Preservation)
     min_iv_threshold: 0.02 # Exclude uninformative variables
-    max_iv_threshold: 1 # Set high to retain strong predictors; Tech Lead will manually review for leakage
-    vif_threshold: 5.0 # Max Variance Inflation Factor to drop highly correlated features
-    business_exclude: [] # Add variables here to force exclude them if Tech Lead identifies data leakage
+    max_iv_threshold: 1.00 # Set high to retain strong predictors; auto-disqualified if leaking
 
-    # Tier 2: Best Subset Selection Method
-    best_subset:
+    # Tier 2: Explainable Pre-decision Rules
+    explainable_rules:
       enabled: true
-      method: "lasso_cv" # Uses LASSO 1-SE rule for selecting the simplest valid subset
-      lasso_cv_splits: 10
-      random_state: 42
-      lasso_max_iter: 10000
-      lasso_solver: "saga"
-      penalty: "l1"
-      l1_ratio: 1.0
+      post_decision_features:
+        - "loan_grade"
+        - "loan_int_rate"
+      redundancy_drop:
+        - "loan_amnt"
+        - "person_income"
+      redundancy_keep: "loan_percent_income" # <--- UPDATED: Using raw feature
 
-    # Tier 3: Champion Model Auto-Selection Logic (Validation Set Evaluation)
+    # Tier 3: Champion Model Auto-Selection Logic (1-SE Rule via 10-Fold CV)
     champion_selection:
-      # Options: "kolmogorov_smirnov_ks", "roc_auc", "f1_score"
-      primary_metric: "kolmogorov_smirnov_ks" # The main decider for credit risk separation
-      secondary_metric: "gini_index" # The tie-breaker for overall ranking stability
-      margin_of_equivalence: 0.01 # If the primary metric diff is <= 1%, use the secondary metric
+      # Context defines business validity. "pre_decision" automatically disqualifies models with post-decision features.
+      prediction_context: "pre_decision"
+      primary_metric: "roc_auc"
+      use_1_se_rule: true # Applies the 1-Standard Error rule to favor parsimonious (simpler) models
+      # Manual governance override (e.g. set to "subset" to force selection regardless of CV results)
+      manual_override: null
 
 # 5. Define target variable for model prediction
 target: "loan_status" # The column name where 1 = Bad and 0 = Good customer
 
 # 6. Define Hyperparameters for the baseline machine learning model
 model:
+  # Notebook 4 transitions to statsmodels.GLM without penalty for inference
   logistic_regression:
     random_state: 42
-    max_iter: 1000
-    c_parameter: 1.0
+    # Regulatory Audit Thresholds for Coefficient & Multi-collinearity checks
+    p_value_threshold: 0.05
+    vif_threshold: 5.0
 
 # 7. Scorecard Scaling Parameters (Financial Engineering Constants)
 scorecard_scaling:
@@ -150,16 +150,10 @@ scorecard_scaling:
 
 # 8. Business Decision Cutoff Thresholds (UI Decision Rules)
 scoring_thresholds:
-  approval_score: 600 # Score >= 600: Automatic Approval
-  review_score: 500 # 500 <= Score < 600: Manual Underwriter Review. Score < 580: Rejection
+  approval_score: 533 # Score >= 533: Automatic Approval
+  review_score: 503 # 503 <= Score < 533: Manual Underwriter Review. Score < 503: Rejection
 
 # 9. Inference Engine & Model Deployment Settings
-# ------------------------------------------------------------------------------
-# Purpose: Controls how artifacts are loaded and evaluated during Streamlit / API execution.
-# Mode options:
-#   - "auto"   : Automatically selects the latest run directory inside the artifacts folder.
-#   - "manual" : Uses the explicit path provided in 'manual_run_dir'.
-# ------------------------------------------------------------------------------
 inference:
   mode: "auto" # Execution mode: "auto" or "manual"
   manual_run_dir: "2026-07-25_run_4" # Target folder name inside artifacts/runs/

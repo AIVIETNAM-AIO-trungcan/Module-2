@@ -3,13 +3,10 @@ Preprocessing Pipeline for Credit Scoring
 -----------------------------------------
 This module splits the preprocessing into 2 separate steps:
 1. CreditDataCleaner: Standardizes values, handles extreme outliers via Capping,
-   enforces strict business logic (e.g., Emp Length < Age), and manages missing
-   values dynamically based on config.yaml.
+   enforces strict business logic, and manages missing values dynamically.
+   Features a strict 'notebook_match' bypass mode for legacy validation.
 2. WOETransformer: Powered by `optbinning` for optimal monotonic binning, WOE encoding,
    and strict mathematical integrity validation (auto-diagnostics).
-
-*Note: Feature Selection (IV screening & LASSO) has been decoupled into a separate
-module to prevent data leakage during cross-validation.*
 """
 
 import re
@@ -43,425 +40,296 @@ def _patched_check_array(*args: Any, **kwargs: Any) -> Any:
 sklearn.utils.validation.check_array = _patched_check_array
 sklearn.utils.check_array = _patched_check_array
 
-# Import optbinning after the patch is applied
 from optbinning import OptimalBinning
 
 
 # ==============================================================================
-# TIER 1: DATA CLEANER
+# TIER 1: DATA CLEANER (DUAL-MODE)
 # ==============================================================================
 class CreditDataCleaner:
     """
-    Step 1: Cleans the raw credit dataset by capping extreme outliers mathematically,
-    removing invalid business records (e.g., employment length >= age),
-    standardizing categorical values, and respecting missing values dynamically.
+    Step 1: Cleans the raw credit dataset based on the injected configuration mode.
+    Maintains a robust audit registry to log structural mutations for MLOps tracking.
     """
 
     def __init__(
         self,
         numerical_features: List[str],
         categorical_features: List[str],
-        cleaning_config: Dict[str, Any],
+        cleaning_config: Dict[str, Any] = None,
+        validation_config: Optional[Dict[str, Any]] = None,
+        mode: str = "mlops_optimized",
     ) -> None:
-        """
-        Initialize the Data Cleaner.
 
-        Args:
-            numerical_features (List[str]): List of numerical feature column names.
-            categorical_features (List[str]): List of categorical feature column names.
-            cleaning_config (Dict[str, Any]): Dictionary containing outlier config and boundary validation rules.
-        """
         self.numerical_features: List[str] = numerical_features.copy()
         self.categorical_features: List[str] = categorical_features.copy()
-        self.cleaning_config: Dict[str, Any] = cleaning_config
-
-        # [AUDIT REGISTRY]: Tracks reason codes without breaking pipeline interface
+        self.cleaning_config: Dict[str, Any] = cleaning_config or {}
+        self.validation_config: Dict[str, Any] = validation_config or {}
+        self.mode: str = mode
         self.audit_report_: Dict[str, Any] = {}
 
+        # [AUTO-CORRECTION] Smart feature routing based on the operational mode
+        if self.mode == "mlops_optimized":
+            if "loan_percent_income" in self.numerical_features:
+                self.numerical_features.remove("loan_percent_income")
+            if "loan_percent_income_computed" not in self.numerical_features:
+                self.numerical_features.append("loan_percent_income_computed")
+
+        elif self.mode == "notebook_match":
+            if "loan_percent_income_computed" in self.numerical_features:
+                self.numerical_features.remove("loan_percent_income_computed")
+            if "loan_percent_income" not in self.numerical_features:
+                self.numerical_features.append("loan_percent_income")
+
     def fit(
-        self,
-        X: pd.DataFrame,
-        y: Optional[pd.Series] = None,
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None
     ) -> "CreditDataCleaner":
-        """
-        Fits the cleaner to the data.
-        Nothing is learned mathematically because all cleaning rules are predefined.
-        """
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Cleans the dataset using statistical outlier capping and dynamic business boundaries.
-
-        Args:
-            X (pd.DataFrame): Raw input DataFrame.
-
-        Returns:
-            pd.DataFrame: A fully cleaned DataFrame.
-            The index might be shorter if strictly invalid business logic outliers were dropped.
-        """
         X_clean = X.copy()
         total_records = len(X_clean)
 
-        # [TEAM HINT - QA DQ-02]: Reason codes dictionary tracking rule violations
         reason_codes: Dict[str, int] = {}
         mutation_audit_log: List[Dict[str, Any]] = []
-
-        # ======================================================================
-        # 1. STATISTICAL OUTLIER HANDLING (Z-SCORE / IQR CAPPING OR DROPPING)
-        # ======================================================================
-        outlier_config = self.cleaning_config.get("outlier_handling", {})
-        strategy = outlier_config.get("strategy", "capping")
         dropped_outliers_count = 0
         dropped_outliers_ratio = 0.0
+        missing_counts = {}
 
-        if outlier_config.get("enabled", False):
-            method = outlier_config.get("method", "zscore")
-            target_cols = outlier_config.get("target_columns", [])
-            z_thresh = outlier_config.get("zscore_threshold", 3.0)
-            iqr_mult = outlier_config.get("iqr_multiplier", 3.0)
+        # ======================================================================
+        # BRANCH 1: NOTEBOOK MATCH (STRICT BYPASS)
+        # ======================================================================
+        if self.mode == "notebook_match":
+            print(
+                "  -> [TIER-1 MODE: NOTEBOOK MATCH] Bypassing Data Cleaner to ensure 100% mathematical match with legacy notebook..."
+            )
+            # We do NOT drop duplicates, do NOT enforce business logic, do NOT upper-case.
+            # Data loader has already intercepted the 902 anomaly rows.
+            missing_counts = {"Imputation Disabled (Notebook Mode)": 0}
 
-            indices_to_drop = set()
+        # ======================================================================
+        # BRANCH 2: MLOPS OPTIMIZED (Z-SCORE CAPPING & SAFE IMPUTATION)
+        # ======================================================================
+        elif self.mode == "mlops_optimized":
+            print(
+                "  -> [TIER-1 MODE: MLOPS OPTIMIZED] Executing statistical capping and business rules..."
+            )
 
-            for col in target_cols:
-                if col in X_clean.columns:
-                    series = X_clean[col].dropna()
+            # 1. Statistical Outlier Handling
+            outlier_config = self.cleaning_config.get("outlier_handling", {})
+            strategy = outlier_config.get("strategy", "capping")
 
-                    if method == "zscore":
-                        mean_val = series.mean()
-                        std_val = series.std()
-                        if std_val > 0:
-                            lower_bound = mean_val - z_thresh * std_val
-                            upper_bound = mean_val + z_thresh * std_val
-                        else:
-                            lower_bound, upper_bound = mean_val, mean_val
+            if outlier_config.get("enabled", False):
+                method = outlier_config.get("method", "zscore")
+                target_cols = outlier_config.get("target_columns", [])
+                z_thresh = outlier_config.get("zscore_threshold", 3.0)
+                iqr_mult = outlier_config.get("iqr_multiplier", 3.0)
+                indices_to_drop = set()
 
-                    elif method == "iqr":
-                        q1 = series.quantile(0.25)
-                        q3 = series.quantile(0.75)
-                        iqr_val = q3 - q1
-                        lower_bound = q1 - iqr_mult * iqr_val
-                        upper_bound = q3 + iqr_mult * iqr_val
+                for col in target_cols:
+                    if col in X_clean.columns:
+                        series = X_clean[col].dropna()
 
-                    if strategy == "drop":
-                        outlier_idx = series[
-                            (series < lower_bound) | (series > upper_bound)
-                        ].index
-                        indices_to_drop.update(outlier_idx.tolist())
-
-                    elif strategy == "capping":
-                        outlier_mask = (X_clean[col] < lower_bound) | (
-                            X_clean[col] > upper_bound
-                        )
-                        outliers_count = outlier_mask.sum()
-                        if outliers_count > 0:
-                            X_clean[col] = np.clip(
-                                X_clean[col], lower_bound, upper_bound
+                        if method == "zscore":
+                            mean_val, std_val = series.mean(), series.std()
+                            lower_bound = (
+                                mean_val - z_thresh * std_val
+                                if std_val > 0
+                                else mean_val
                             )
-                            reason_codes[f"CAPPED_OUTLIERS_{col}"] = int(outliers_count)
+                            upper_bound = (
+                                mean_val + z_thresh * std_val
+                                if std_val > 0
+                                else mean_val
+                            )
+                        elif method == "iqr":
+                            q1, q3 = series.quantile(0.25), series.quantile(0.75)
+                            iqr_val = q3 - q1
+                            lower_bound, upper_bound = (
+                                q1 - iqr_mult * iqr_val,
+                                q3 + iqr_mult * iqr_val,
+                            )
 
-            if strategy == "drop" and indices_to_drop:
-                dropped_outliers_count = len(indices_to_drop)
-                dropped_outliers_ratio = (dropped_outliers_count / total_records) * 100
-                reason_codes[f"DROPPED_OUTLIERS_{method.upper()}"] = (
-                    dropped_outliers_count
+                        if strategy == "drop":
+                            outlier_idx = series[
+                                (series < lower_bound) | (series > upper_bound)
+                            ].index
+                            indices_to_drop.update(outlier_idx.tolist())
+                        elif strategy == "capping":
+                            outlier_mask = (X_clean[col] < lower_bound) | (
+                                X_clean[col] > upper_bound
+                            )
+                            if outlier_mask.sum() > 0:
+                                X_clean[col] = np.clip(
+                                    X_clean[col], lower_bound, upper_bound
+                                )
+                                reason_codes[f"CAPPED_OUTLIERS_{col}"] = int(
+                                    outlier_mask.sum()
+                                )
+
+                if strategy == "drop" and indices_to_drop:
+                    dropped_outliers_count = len(indices_to_drop)
+                    dropped_outliers_ratio = (
+                        dropped_outliers_count / total_records
+                    ) * 100
+                    reason_codes[f"DROPPED_OUTLIERS_{method.upper()}"] = (
+                        dropped_outliers_count
+                    )
+                    X_clean = X_clean.drop(index=list(indices_to_drop))
+
+            # 2. Dynamic Business Validation Boundaries
+            AGE_MIN = self.validation_config.get("person_age", {}).get("min", 18)
+            AGE_MAX = self.validation_config.get("person_age", {}).get("max", 100)
+            INCOME_MIN = self.validation_config.get("person_income", {}).get("min", 0)
+            EMP_LENGTH_MIN = self.validation_config.get("person_emp_length", {}).get(
+                "min", 0
+            )
+            EMP_LENGTH_MAX = self.validation_config.get("person_emp_length", {}).get(
+                "max", 100
+            )
+            LOAN_AMOUNT_MIN = self.validation_config.get("loan_amnt", {}).get("min", 0)
+            INTEREST_RATE_MIN = self.validation_config.get("loan_int_rate", {}).get(
+                "min", 0.0
+            )
+            CREDIT_HISTORY_MIN = self.validation_config.get(
+                "cb_person_cred_hist_length", {}
+            ).get("min", 0)
+
+            for column in self.categorical_features:
+                if column in X_clean.columns:
+                    X_clean[column] = X_clean[column].apply(
+                        lambda x: (
+                            str(x).strip().upper()
+                            if pd.notna(x) and str(x).strip() != ""
+                            else np.nan
+                        )
+                    )
+
+            # Strict Logic: Emp Length >= Biological Age
+            if (
+                "person_emp_length" in X_clean.columns
+                and "person_age" in X_clean.columns
+            ):
+                invalid_logic_mask = (
+                    (X_clean["person_emp_length"] >= X_clean["person_age"])
+                    & X_clean["person_emp_length"].notna()
+                    & X_clean["person_age"].notna()
                 )
-                X_clean = X_clean.drop(index=list(indices_to_drop))
+                if invalid_logic_mask.sum() > 0:
+                    reason_codes["DROPPED_EMP_GE_AGE"] = int(invalid_logic_mask.sum())
+                    X_clean = X_clean.drop(index=X_clean[invalid_logic_mask].index)
 
-        # ======================================================================
-        # 2. BUSINESS LOGICAL BOUNDARY VALIDATION
-        # ======================================================================
-        # Extract dynamic validation boundaries from config
-        AGE_MIN = self.cleaning_config.get("person_age", {}).get("min", 18)
-        AGE_MAX = self.cleaning_config.get("person_age", {}).get("max", 100)
-        INCOME_MIN = self.cleaning_config.get("person_income", {}).get("min", 0)
-        EMP_LENGTH_MIN = self.cleaning_config.get("person_emp_length", {}).get("min", 0)
-        EMP_LENGTH_MAX = self.cleaning_config.get("person_emp_length", {}).get(
-            "max", 100
-        )
-        LOAN_AMOUNT_MIN = self.cleaning_config.get("loan_amnt", {}).get("min", 0)
-        INTEREST_RATE_MIN = self.cleaning_config.get("loan_int_rate", {}).get(
-            "min", 0.0
-        )
-        CREDIT_HISTORY_MIN = self.cleaning_config.get(
-            "cb_person_cred_hist_length", {}
-        ).get("min", 0)
-
-        # Standardize categorical text format
-        categorical_to_standardize = [
-            "person_home_ownership",
-            "loan_intent",
-            "loan_grade",
-            "cb_person_default_on_file",
-        ]
-
-        for column in categorical_to_standardize:
-            if column in X_clean.columns:
-                X_clean[column] = X_clean[column].apply(
-                    lambda x: (
-                        str(x).strip().upper()
-                        if pd.notna(x) and str(x).strip() != ""
-                        else np.nan
+            # Map validation violations to NaN for OptBinning
+            def apply_boundary_check(col_name, lower, upper, code_name):
+                if col_name in X_clean.columns:
+                    mask = (
+                        ~X_clean[col_name].between(lower, upper)
+                        & X_clean[col_name].notna()
                     )
-                )
+                    if mask.sum() > 0:
+                        reason_codes[code_name] = int(mask.sum())
+                        for idx in X_clean[mask].index:
+                            mutation_audit_log.append(
+                                {
+                                    "row_index": idx,
+                                    "column_altered": col_name,
+                                    "original_value": X_clean.loc[idx, col_name],
+                                    "imputed_value": "NaN",
+                                    "reason": f"Out of valid range [{lower} - {upper}]",
+                                }
+                            )
+                        X_clean.loc[mask, col_name] = np.nan
 
-        # [STRICT BUSINESS RULE]: Drop records where Employment Length >= Biological Age
-        if "person_emp_length" in X_clean.columns and "person_age" in X_clean.columns:
-            invalid_logic_mask = (
-                (X_clean["person_emp_length"] >= X_clean["person_age"])
-                & X_clean["person_emp_length"].notna()
-                & X_clean["person_age"].notna()
+            apply_boundary_check("person_age", AGE_MIN, AGE_MAX, "INVALID_AGE")
+            apply_boundary_check("person_income", INCOME_MIN, np.inf, "INVALID_INCOME")
+            apply_boundary_check(
+                "person_emp_length",
+                EMP_LENGTH_MIN,
+                EMP_LENGTH_MAX,
+                "INVALID_EMP_LENGTH",
             )
-            invalid_logic_count = invalid_logic_mask.sum()
-            if invalid_logic_count > 0:
-                reason_codes["DROPPED_EMP_GE_AGE"] = int(invalid_logic_count)
-                X_clean = X_clean.drop(index=X_clean[invalid_logic_mask].index)
-
-        # [MUTATION LOGGING]: Assign invalid single-field boundaries to NaN
-        if "person_age" in X_clean.columns:
-            invalid_age_mask = (
-                ~X_clean["person_age"].between(AGE_MIN, AGE_MAX)
-                & X_clean["person_age"].notna()
+            apply_boundary_check(
+                "loan_amnt", LOAN_AMOUNT_MIN, np.inf, "INVALID_LOAN_AMNT"
             )
-            reason_codes["INVALID_AGE"] = int(invalid_age_mask.sum())
-            if reason_codes["INVALID_AGE"] > 0:
-                for idx in X_clean[invalid_age_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "person_age",
-                            "original_value": X_clean.loc[idx, "person_age"],
-                            "imputed_value": "NaN",
-                            "reason": f"Out of valid range [{AGE_MIN} - {AGE_MAX}]",
-                        }
-                    )
-            X_clean.loc[invalid_age_mask, "person_age"] = np.nan
-
-        if "person_income" in X_clean.columns:
-            invalid_income_mask = (X_clean["person_income"] < INCOME_MIN) & X_clean[
-                "person_income"
-            ].notna()
-            reason_codes["INVALID_INCOME"] = int(invalid_income_mask.sum())
-            if reason_codes["INVALID_INCOME"] > 0:
-                for idx in X_clean[invalid_income_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "person_income",
-                            "original_value": X_clean.loc[idx, "person_income"],
-                            "imputed_value": "NaN",
-                            "reason": f"Below minimum (< {INCOME_MIN})",
-                        }
-                    )
-            X_clean.loc[invalid_income_mask, "person_income"] = np.nan
-
-        if "person_emp_length" in X_clean.columns:
-            invalid_emp_mask = (
-                ~X_clean["person_emp_length"].between(EMP_LENGTH_MIN, EMP_LENGTH_MAX)
-                & X_clean["person_emp_length"].notna()
+            apply_boundary_check(
+                "loan_int_rate", INTEREST_RATE_MIN, np.inf, "INVALID_INT_RATE"
             )
-            reason_codes["INVALID_EMP_LENGTH"] = int(invalid_emp_mask.sum())
-            if reason_codes["INVALID_EMP_LENGTH"] > 0:
-                for idx in X_clean[invalid_emp_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "person_emp_length",
-                            "original_value": X_clean.loc[idx, "person_emp_length"],
-                            "imputed_value": "NaN",
-                            "reason": f"Out of valid range [{EMP_LENGTH_MIN} - {EMP_LENGTH_MAX}]",
-                        }
-                    )
-            X_clean.loc[invalid_emp_mask, "person_emp_length"] = np.nan
+            apply_boundary_check(
+                "cb_person_cred_hist_length",
+                CREDIT_HISTORY_MIN,
+                np.inf,
+                "INVALID_CRED_HIST",
+            )
 
-        if "loan_amnt" in X_clean.columns:
-            invalid_loan_mask = (X_clean["loan_amnt"] < LOAN_AMOUNT_MIN) & X_clean[
-                "loan_amnt"
-            ].notna()
-            reason_codes["INVALID_LOAN_AMNT"] = int(invalid_loan_mask.sum())
-            if reason_codes["INVALID_LOAN_AMNT"] > 0:
-                for idx in X_clean[invalid_loan_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "loan_amnt",
-                            "original_value": X_clean.loc[idx, "loan_amnt"],
-                            "imputed_value": "NaN",
-                            "reason": f"Below minimum (< {LOAN_AMOUNT_MIN})",
-                        }
-                    )
-            X_clean.loc[invalid_loan_mask, "loan_amnt"] = np.nan
+            # Recompute loan percentage
+            if {"loan_amnt", "person_income"}.issubset(X_clean.columns):
+                X_clean["loan_percent_income_computed"] = (
+                    X_clean["loan_amnt"] / X_clean["person_income"].replace(0, np.nan)
+                ).round(4)
+            X_clean = X_clean.drop(columns=["loan_percent_income"], errors="ignore")
 
-        if "loan_int_rate" in X_clean.columns:
-            invalid_rate_mask = (
-                X_clean["loan_int_rate"] < INTEREST_RATE_MIN
-            ) & X_clean["loan_int_rate"].notna()
-            reason_codes["INVALID_INT_RATE"] = int(invalid_rate_mask.sum())
-            if reason_codes["INVALID_INT_RATE"] > 0:
-                for idx in X_clean[invalid_rate_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "loan_int_rate",
-                            "original_value": X_clean.loc[idx, "loan_int_rate"],
-                            "imputed_value": "NaN",
-                            "reason": f"Below minimum (< {INTEREST_RATE_MIN})",
-                        }
-                    )
-            X_clean.loc[invalid_rate_mask, "loan_int_rate"] = np.nan
+            missing_counts = X_clean.isna().sum().to_dict()
 
-        if "cb_person_cred_hist_length" in X_clean.columns:
-            invalid_hist_mask = (
-                X_clean["cb_person_cred_hist_length"] < CREDIT_HISTORY_MIN
-            ) & X_clean["cb_person_cred_hist_length"].notna()
-            reason_codes["INVALID_CRED_HIST"] = int(invalid_hist_mask.sum())
-            if reason_codes["INVALID_CRED_HIST"] > 0:
-                for idx in X_clean[invalid_hist_mask].index:
-                    mutation_audit_log.append(
-                        {
-                            "row_index": idx,
-                            "column_altered": "cb_person_cred_hist_length",
-                            "original_value": X_clean.loc[
-                                idx, "cb_person_cred_hist_length"
-                            ],
-                            "imputed_value": "NaN",
-                            "reason": f"Below minimum (< {CREDIT_HISTORY_MIN})",
-                        }
-                    )
-            X_clean.loc[invalid_hist_mask, "cb_person_cred_hist_length"] = np.nan
+            # Optional Imputation
+            imputation_config = self.cleaning_config.get("imputation", {})
+            if imputation_config.get("enabled", False) and self.numerical_features:
+                num_cols = [c for c in self.numerical_features if c in X_clean.columns]
+                X_clean[num_cols] = X_clean[num_cols].fillna(-1.0)
 
-        # Recompute loan percentage of income to fix data inconsistencies
-        if {"loan_amnt", "person_income"}.issubset(X_clean.columns):
-            X_clean["loan_percent_income_computed"] = (
-                X_clean["loan_amnt"] / X_clean["person_income"].replace(0, np.nan)
-            ).round(4)
-
-        # Remove original loan percentage feature to prevent multicollinearity
-        X_clean = X_clean.drop(columns=["loan_percent_income"], errors="ignore")
-
-        # Track missing value counts before imputation (if any)
-        missing_counts = X_clean.isna().sum().to_dict()
-
-        # ======================================================================
-        # 3. IMPUTATION HANDLING
-        # ======================================================================
-        imputation_config = self.cleaning_config.get("imputation", {})
-
-        # Tech Lead Rule: Do not impute numerical missing values with Mean/Median.
-        # Leave them as NaN so OptBinning assigns them to an isolated 'Missing' Bin for proper risk profiling.
-        if imputation_config.get("enabled", False):
-            if self.numerical_features:
-                numerical_columns = [
-                    col for col in self.numerical_features if col in X_clean.columns
+            if self.categorical_features:
+                cat_cols = [
+                    c for c in self.categorical_features if c in X_clean.columns
                 ]
-                X_clean[numerical_columns] = X_clean[numerical_columns].fillna(-1.0)
+                X_clean[cat_cols] = X_clean[cat_cols].fillna("Missing")
 
-        # For categoricals, we explicitly map NaNs to the string "Missing" to ensure type consistency
-        if self.categorical_features:
-            categorical_columns = [
-                col for col in self.categorical_features if col in X_clean.columns
-            ]
-            X_clean[categorical_columns] = X_clean[categorical_columns].fillna(
-                "Missing"
-            )
-
-        # Save audit registry
+        # ======================================================================
+        # MLOPS AUDIT REGISTRY COMMIT
+        # ======================================================================
         self.audit_report_ = {
             "total_input_records": total_records,
             "final_records": len(X_clean),
             "outliers_dropped_count": dropped_outliers_count,
             "outliers_dropped_ratio": dropped_outliers_ratio,
             "reason_codes_flagged": reason_codes,
-            "missing_values_imputed": (
-                missing_counts
-                if imputation_config.get("enabled", False)
-                else {"Imputation Disabled": 0}
-            ),
+            "missing_values_imputed": missing_counts,
             "mutation_details": mutation_audit_log,
         }
 
         return X_clean
 
     def _print_audit_log(self) -> None:
-        """Helper method to print the data quality audit report to the terminal."""
         if not self.audit_report_:
-            print(
-                "[DATA QUALITY AUDIT] No audit report generated yet. Run transform() first."
-            )
             return
-
         print(
             f"[DATA QUALITY AUDIT] Total Population Evaluated: {self.audit_report_['total_input_records']} rows"
         )
+        if self.mode == "notebook_match":
+            print("  -> [NOTEBOOK MODE] OptBinning raw bypass engaged.")
+            return
 
-        # Log dropped/capped outliers rationale
         drop_count = self.audit_report_.get("outliers_dropped_count", 0)
-        drop_ratio = self.audit_report_.get("outliers_dropped_ratio", 0.0)
         if drop_count > 0:
             print(
-                f"  -> [STATISTICAL CLEANING] Permanently dropped {drop_count} extreme outlier records "
-                f"({drop_ratio:.4f}% of total data) to preserve risk monotonicity."
+                f"  -> [STATISTICAL] Dropped {drop_count} records to preserve monotonicity."
             )
-
         capped_count = sum(
             v
             for k, v in self.audit_report_.get("reason_codes_flagged", {}).items()
             if "CAPPED" in k
         )
         if capped_count > 0:
-            print(
-                f"  -> [STATISTICAL CLEANING] Successfully capped {capped_count} extreme outlier values to upper/lower boundaries."
-            )
-
+            print(f"  -> [STATISTICAL] Capped {capped_count} extreme outlier values.")
         biz_drop_count = self.audit_report_.get("reason_codes_flagged", {}).get(
             "DROPPED_EMP_GE_AGE", 0
         )
         if biz_drop_count > 0:
             print(
-                f"  -> [BUSINESS RULE] Permanently dropped {biz_drop_count} records due to impossible logic (Emp Length >= Age)."
-            )
-
-        flags = self.audit_report_.get("reason_codes_flagged", {})
-        if any(v > 0 for v in flags.values()):
-            print("  -> Flagged Anomalies & Violations:")
-            for code, count in flags.items():
-                if count > 0:
-                    action = (
-                        "Permanently Dropped"
-                        if "DROPPED" in code
-                        else (
-                            "Capped to Bounds"
-                            if "CAPPED" in code
-                            else "Converted to NaN"
-                        )
-                    )
-                    print(f"     * [{code}]: {count} records ({action})")
-
-        mutation_log = self.audit_report_.get("mutation_details", [])
-        if mutation_log:
-            print(
-                f"  -> [MUTATION AUDIT] Captured {len(mutation_log)} mutation events. Tracked in audit_report_['mutation_details']."
-            )
-
-        imputed = self.audit_report_.get("missing_values_imputed", {})
-        if imputed and "Imputation Disabled" not in imputed:
-            print("  -> Imputed Missing Values:")
-            for col, count in imputed.items():
-                if count > 0:
-                    print(f"     * [{col}]: {count} rows imputed")
-        elif "Imputation Disabled" in imputed:
-            print(
-                "  -> [MISSING VALUES]: Imputation is DISABLED. NaN values preserved for Risk Binning."
+                f"  -> [BUSINESS RULE] Dropped {biz_drop_count} impossible logic records."
             )
 
     def fit_transform(
-        self,
-        X: pd.DataFrame,
-        y: Optional[pd.Series] = None,
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None
     ) -> pd.DataFrame:
-        """
-        Combines fit() and transform() sequentially.
-        """
         return self.fit(X, y).transform(X)
 
 
@@ -481,19 +349,9 @@ class WOETransformer:
         bin_config: Dict[str, Any],
         diagnostics_config: Dict[str, float],
     ) -> None:
-        """
-        Initializes the Weight of Evidence (WOE) transformer.
 
-        Args:
-            numerical_features (List[str]): Numerical columns to be discretized.
-            categorical_features (List[str]): Categorical columns to be encoded.
-            bin_config (Dict[str, Any]): Dictionary of settings for optbinning.
-            diagnostics_config (Dict[str, float]): Thresholds for bin auditing.
-        """
         self.numerical_features = set(numerical_features)
         self.categorical_features = set(categorical_features)
-
-        # Configuration mapping
         self.bin_config: Dict[str, Any] = bin_config
         self.small_bin_threshold: float = diagnostics_config.get(
             "small_bin_threshold", 0.05
@@ -502,23 +360,26 @@ class WOETransformer:
             "extreme_woe_threshold", 2.0
         )
 
-        # Stores the OptBinning models, IV scores, and tables
         self.models_: Dict[str, OptimalBinning] = {}
         self.iv_scores: Dict[str, float] = {}
         self.binning_tables_: Dict[str, pd.DataFrame] = {}
-
-        # Backward compatibility for Step 7 scorecard generation
         self.woe_dictionaries: Dict[str, Dict[str, float]] = {}
         self.bin_edges: Dict[str, List[float]] = {}
-
-        # MLOps Diagnostics Registry (Tracks small bins, pure bins, extreme WOE)
         self.diagnostic_warnings_: List[Dict[str, Any]] = []
 
+        # [AUTO-CORRECTION] Ensure proper feature routing dynamically based on injected config
+        if (
+            "loan_percent_income" in self.bin_config
+            and "loan_percent_income" not in self.numerical_features
+        ):
+            self.numerical_features.add("loan_percent_income")
+        if (
+            "loan_percent_income_computed" in self.bin_config
+            and "loan_percent_income_computed" not in self.numerical_features
+        ):
+            self.numerical_features.add("loan_percent_income_computed")
+
     def _prepare_feature_array(self, data: pd.DataFrame, feature: str) -> np.ndarray:
-        """
-        Prepares column dtype correctly for OptBinning solver input.
-        Strips PyArrow string wrappers to ensure clean labels in downstream charts.
-        """
         if feature in self.categorical_features:
             return np.array(
                 data[feature].fillna("Missing").astype(str).tolist(), dtype=object
@@ -526,20 +387,9 @@ class WOETransformer:
         return pd.to_numeric(data[feature], errors="coerce").to_numpy()
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "WOETransformer":
-        """
-        Learns the optimal bin boundaries and calculates the explicit WOE math.
-
-        Args:
-            X (pd.DataFrame): Training data (must be pre-cleaned by Tier 1).
-            y (pd.Series): Target labels (1 for Default/Event, 0 for Good/Non-Event).
-
-        Returns:
-            WOETransformer: The fitted instance.
-        """
         y_array: np.ndarray = y.astype(int).to_numpy()
         n_train: int = len(X)
 
-        # Safely intersect defined features with actual columns available
         all_features: List[str] = list(
             self.numerical_features.union(self.categorical_features).intersection(
                 X.columns
@@ -555,7 +405,7 @@ class WOETransformer:
                 "categorical" if feature in self.categorical_features else "numerical"
             )
 
-            # Dynamic parameters overriding mechanism
+            # [UPDATED] Dynamically pull max_n_bins from global config (fallback to 6 for Notebook)
             params = {
                 "name": feature,
                 "dtype": f_type,
@@ -565,7 +415,7 @@ class WOETransformer:
                 "max_n_prebins": self.bin_config.get("max_n_prebins", 20),
                 "min_prebin_size": self.bin_config.get("min_prebin_size", 0.05),
                 "max_n_bins": self.bin_config.get(
-                    feature, self.bin_config.get("default_bins", 5)
+                    feature, self.bin_config.get("max_n_bins", 6)
                 ),
                 "special_codes": ["Missing"] if f_type == "categorical" else None,
             }
@@ -582,10 +432,9 @@ class WOETransformer:
                 model.fit(x_array, y_array)
             except Exception as e:
                 raise RuntimeError(
-                    f"[CRITICAL] OptBinning failed to converge for feature '{feature}': {e}"
+                    f"[CRITICAL] OptBinning failed to converge for '{feature}': {e}"
                 )
 
-            # Extract Table & Metrics
             full_table = model.binning_table.build()
             iv_value = float(model.binning_table.iv)
             status = getattr(model, "status", "UNKNOWN")
@@ -594,16 +443,21 @@ class WOETransformer:
             self.iv_scores[feature] = iv_value
             self.binning_tables_[feature] = full_table
 
-            # Record numerical splits for scoring pipelines
             if f_type == "numerical":
                 splits = getattr(model, "splits", [])
-                # Insert -inf and inf as bounds to be utilized by pd.cut() downstream
                 self.bin_edges[feature] = [-np.inf] + list(splits) + [np.inf]
 
-            # Reconstruct woe_dictionaries for backward compatibility (used in Scorecard construction)
             clean_dict_table = full_table.loc[
                 ~full_table.index.astype(str).str.strip().isin(["Totals", "Total"])
-            ]
+            ].copy()
+
+            if "Bin" in clean_dict_table.columns:
+                clean_dict_table = clean_dict_table.loc[
+                    ~clean_dict_table["Bin"]
+                    .astype(str)
+                    .str.strip()
+                    .isin(["Totals", "Total"])
+                ]
 
             if f_type == "categorical":
                 feature_woe_dict = {}
@@ -625,7 +479,6 @@ class WOETransformer:
                             feature_woe_dict[cat.strip()] = woe_val
                     else:
                         feature_woe_dict[bin_str.strip()] = woe_val
-
                 self.woe_dictionaries[feature] = feature_woe_dict
             else:
                 feature_woe_dict = {}
@@ -639,10 +492,8 @@ class WOETransformer:
                     else:
                         feature_woe_dict[f"Bin_{bin_counter}"] = woe_val
                         bin_counter += 1
-
                 self.woe_dictionaries[feature] = feature_woe_dict
 
-            # Run Background Analytics/Diagnostics
             self._run_binning_diagnostics(feature, full_table, n_train)
 
             print(
@@ -654,11 +505,6 @@ class WOETransformer:
     def _run_binning_diagnostics(
         self, feature: str, table: pd.DataFrame, n_train: int
     ) -> None:
-        """
-        Internal audit for small bins, pure bins, and extreme WOE values.
-        Alerts are safely stored in `diagnostic_warnings_` to be exported by MLOps.
-        """
-        # Filter out "Totals" row
         clean_table = table.loc[
             ~table.index.astype(str).str.strip().isin(["Totals", "Total"])
         ].copy()
@@ -666,19 +512,15 @@ class WOETransformer:
         for _, row in clean_table.iterrows():
             if pd.isna(row.get("Count")):
                 continue
-
             count = int(row["Count"])
             if count == 0:
                 continue
 
-            good = int(row["Non-event"])
-            bad = int(row["Event"])
             share = count / n_train
             woe = float(row["WoE"])
-
             is_small = share < self.small_bin_threshold
             is_extreme = abs(woe) > self.extreme_woe_threshold
-            is_pure = good == 0 or bad == 0
+            is_pure = int(row["Non-event"]) == 0 or int(row["Event"]) == 0
 
             if is_small or is_extreme or is_pure:
                 self.diagnostic_warnings_.append(
@@ -695,18 +537,6 @@ class WOETransformer:
                 )
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Transforms dataset into WOE scores and rigorously validates integrity.
-
-        Args:
-            X (pd.DataFrame): The unseen raw data to transform.
-
-        Returns:
-            pd.DataFrame: A dataset where original values are replaced by continuous WOE floats.
-
-        Raises:
-            KeyError: If a required feature column is missing.
-        """
         X_woe = pd.DataFrame(index=X.index)
 
         for feature, model in self.models_.items():
@@ -714,10 +544,7 @@ class WOETransformer:
                 raise KeyError(
                     f"[CRITICAL] Missing required feature for WOE Transform: {feature}"
                 )
-
             x_array = self._prepare_feature_array(X, feature)
-
-            # Use empirical metrics to safeguard against unseen inference data anomalies
             X_woe[feature] = model.transform(
                 x_array,
                 metric="woe",
@@ -725,34 +552,44 @@ class WOETransformer:
                 metric_special="empirical",
             )
 
-        # Perform rigid validation before releasing transformed data
         self._validate_woe_integrity(X_woe)
-
         return X_woe
 
-    def _validate_woe_integrity(self, X_woe: pd.DataFrame) -> None:
-        """
-        Hard constraint validator: Stops the pipeline if WOE transform produces NaN or Inf.
+    def transform_to_bins(self, X: pd.DataFrame) -> pd.DataFrame:
+        X_bins = pd.DataFrame(index=X.index)
 
-        Raises:
-            ValueError: If missing/infinite values are detected.
-        """
+        for feature in self.models_.keys():
+            if feature not in X.columns:
+                raise KeyError(
+                    f"[CRITICAL] Missing required feature for Bin Transform: {feature}"
+                )
+
+            if feature in self.categorical_features:
+                X_bins[feature] = X[feature].fillna("Missing").astype(str)
+            else:
+                edges = self.bin_edges[feature]
+                group_names = [f"Bin_{i}" for i in range(len(edges) - 1)]
+                X_bins[feature] = pd.cut(
+                    X[feature], bins=edges, include_lowest=True, labels=group_names
+                ).astype(str)
+                X_bins[feature] = X_bins[feature].replace("nan", "Missing")
+
+        return X_bins
+
+    def _validate_woe_integrity(self, X_woe: pd.DataFrame) -> None:
         missing_count = int(X_woe.isna().sum().sum())
         infinite_count = int(np.isinf(X_woe.to_numpy(dtype=float)).sum())
 
         if missing_count > 0:
             raise ValueError(
-                f"[DQ-03 FAILED] WOE transformation generated {missing_count} NaN values. Check unseen categories."
+                f"[DQ-03 FAILED] WOE transformation generated {missing_count} NaN values."
             )
-
         if infinite_count > 0:
             raise ValueError(
-                f"[DQ-03 FAILED] WOE transformation generated {infinite_count} Infinite (Inf) values. Check pure bins."
+                f"[DQ-03 FAILED] WOE transformation generated {infinite_count} Infinite values."
             )
 
-    def fit_transform(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-        """
-        Combines fit() and transform() sequentially.
-        """
-        self.fit(X, y)
-        return self.transform(X)
+    def fit_transform(
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+    ) -> pd.DataFrame:
+        return self.fit(X, y).transform(X)

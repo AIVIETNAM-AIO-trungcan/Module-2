@@ -31,6 +31,7 @@ class CreditScorecardScaler:
         # Calculate foundational scaling constants
         self.factor: float = self.pdo / math.log(2)
         self.offset: float = self.base_score - (self.factor * math.log(self.base_odds))
+        self.base_points: float = 0.0
 
         # Placeholders for generated scorecard parameters
         self.scorecard_table: pd.DataFrame = pd.DataFrame()
@@ -44,9 +45,11 @@ class CreditScorecardScaler:
         intercept: float = model_trainer.intercept_
         woe_dicts: Dict[str, Dict[str, float]] = woe_transformer.woe_dictionaries
 
+        # Calculate Isolated Base Points (Matching Notebook 2 Logic)
+        self.base_points = self.offset - (self.factor * intercept)
+
         # Identify features that successfully survived Information Value (IV) filtering
         surviving_features: List[str] = list(coefficients.keys())
-        n_features: int = len(surviving_features)
 
         scorecard_rows: List[Dict[str, Any]] = []
         self.points_map = {}
@@ -57,11 +60,9 @@ class CreditScorecardScaler:
             self.points_map[feature] = {}
 
             for bin_name, woe_val in feature_woe_dict.items():
-                # Primary credit scaling transformation
-                points = -(woe_val * beta * self.factor) + (
-                    (self.offset - (intercept * self.factor)) / n_features
-                )
-                rounded_points = int(round(points))
+                # Strict Notebook 2 Point Calculation (Base points are NOT distributed)
+                raw_points = -(self.factor * beta * woe_val)
+                rounded_points = int(np.rint(raw_points))
 
                 # Keep core map keyed on technical bin names to preserve transform pipeline integrity
                 self.points_map[feature][bin_name] = rounded_points
@@ -112,7 +113,8 @@ class CreditScorecardScaler:
                         "Feature": feature,
                         "Bin/Category": display_name,
                         "WOE": woe_val,
-                        "Beta": beta,
+                        "Coefficient": beta,
+                        "Raw_Points": raw_points,
                         "Scaled_Points": rounded_points,
                         "Display_Order": sort_idx,
                     }
@@ -164,9 +166,12 @@ class CreditScorecardScaler:
 
         for feature in self.points_map.keys():
             score_df[feature] = X_woe_mapped_bins[feature].map(self.points_map[feature])
+            # Ensure unseen/missing map to 0 fallback
+            score_df[feature] = score_df[feature].fillna(0)
 
-        final_credit_scores: pd.Series = score_df.sum(axis=1).astype(int)
-        return final_credit_scores
+        # Final score requires adding the baseline offset points
+        final_credit_scores: pd.Series = score_df.sum(axis=1) + self.base_points
+        return np.rint(final_credit_scores).astype(int)
 
     def export_artifacts(self, folder_path: Path) -> None:
         """
@@ -206,6 +211,7 @@ class CreditScorecardScaler:
                 "generated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "base_score": self.base_score,
                 "pdo": self.pdo,
+                "base_points": float(self.base_points),
             },
             "bin_edges": clean_bin_edges,
             "points_map": self.points_map,

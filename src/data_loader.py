@@ -2,9 +2,9 @@
 Data Loader and Splitting Module
 --------------------------------
 Purpose:
-    This module is dedicated to the training and validation phase.
-    It loads the local raw dataset and splits it into Train, Validation and Test sets
-    applying stratified splitting to maintain the class distribution of imbalanced data.
+    This module is dedicated to the data acquisition and splitting phase.
+    It loads the local raw dataset and splits it strictly into Train and Test sets.
+    Supports dual-mode preprocessing interception to match legacy notebook drops.
 """
 
 import pandas as pd
@@ -14,27 +14,48 @@ from sklearn.model_selection import train_test_split
 from src.config import RAW_DATA_FILE
 
 
-def load_raw_training_data(file_path: Optional[str] = None) -> pd.DataFrame:
+def load_raw_training_data(
+    file_path: Optional[str] = None, mode: str = "mlops_optimized"
+) -> pd.DataFrame:
     """
     Loads the local raw credit dataset for model training.
 
     Args:
-        file_path (Optional[str]):
-            Custom file path. If None, use the configured default path.
+        file_path (Optional[str]): Custom file path. If None, use the configured default path.
+        mode (str): Branching toggle ('notebook_match' or 'mlops_optimized').
 
     Returns:
-        pd.DataFrame:
-            Raw training dataset.
+        pd.DataFrame: Raw training dataset.
 
     Raises:
-        FileNotFoundError:
-            If the dataset cannot be found.
+        FileNotFoundError: If the dataset cannot be found.
     """
     actual_path = file_path if file_path is not None else RAW_DATA_FILE
 
     try:
         df = pd.read_csv(actual_path)
-        print(f"[LOADER] Raw training data loaded successfully. Shape: {df.shape}")
+        print(
+            f"[LOADER] Raw training data loaded successfully. Initial Shape: {df.shape}"
+        )
+
+        # ======================================================================
+        # BRANCH 1: NOTEBOOK MATCH (PRE-SPLIT INTERCEPTION)
+        # ======================================================================
+        # Trong Notebook cũ, dữ liệu được xóa thủ công TRƯỚC KHI chia Train/Test
+        if mode == "notebook_match":
+            print(
+                "  -> [LOADER MODE: NOTEBOOK MATCH] Intercepting data to hard-drop legacy anomalies before split..."
+            )
+            # 1. Drop NaN in person_emp_length
+            df = df.dropna(subset=["person_emp_length"])
+            # 2. Drop person_age > 100
+            df = df[df["person_age"] <= 100]
+            # 3. Drop person_emp_length > 100
+            df = df[df["person_emp_length"] <= 100]
+            print(
+                f"  -> [LOADER] Post-Notebook-Cleaning Shape: {df.shape} (Expected Target: 31679 rows)"
+            )
+
         return df
 
     except FileNotFoundError as e:
@@ -47,15 +68,11 @@ def validate_target(df: pd.DataFrame, target_column: str) -> None:
     Validate the target column before splitting.
 
     Args:
-        df (pd.DataFrame):
-            Input dataframe.
-
-        target_column (str):
-            Target column name.
+        df (pd.DataFrame): Input dataframe.
+        target_column (str): Target column name.
 
     Raises:
-        ValueError:
-            If the target is invalid.
+        ValueError: If the target is invalid.
     """
     if target_column not in df.columns:
         raise ValueError(f"Target column '{target_column}' does not exist.")
@@ -76,74 +93,51 @@ def validate_target(df: pd.DataFrame, target_column: str) -> None:
         raise ValueError("Target must contain both classes.")
 
 
-def split_train_val_test(
+def split_train_test(
     df: pd.DataFrame,
     target_column: str,
     split_params: Dict[str, Any],
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Split the dataset into Train, Validation and Test sets.
+    Split the dataset firmly into Train and Test sets.
 
     Args:
-        df (pd.DataFrame):
-            Complete training dataset.
-
-        target_column (str):
-            Target column name.
-
-        split_params (Dict[str, Any]):
-            Splitting configuration.
+        df (pd.DataFrame): Complete training dataset.
+        target_column (str): Target column name.
+        split_params (Dict[str, Any]): Splitting configuration (test_size, random_state, stratify).
 
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-            Train, Validation and Test datasets.
+        Tuple[pd.DataFrame, pd.DataFrame]: Train and Test datasets.
     """
     validate_target(df, target_column)
 
     test_size = split_params.get("test_size", 0.20)
-    val_size = split_params.get("val_size", 0.16)
     random_state = split_params.get("random_state", 42)
     should_stratify = split_params.get("stratify", True)
 
-    train_size = 1 - test_size - val_size
-
-    assert (
-        abs(train_size + val_size + test_size - 1.0) < 1e-9
-    ), "Split ratios must sum to 1.0."
-
-    relative_val_size = val_size / (train_size + val_size)
-
-    df_train_val, df_test = train_test_split(
+    df_train, df_test = train_test_split(
         df,
         test_size=test_size,
         random_state=random_state,
         stratify=df[target_column] if should_stratify else None,
     )
 
-    df_train, df_val = train_test_split(
-        df_train_val,
-        test_size=relative_val_size,
-        random_state=random_state,
-        stratify=df_train_val[target_column] if should_stratify else None,
-    )
-
-    print("[LOADER] Stratified splitting finished:")
+    print("\n[LOADER] Stratified Train/Test Splitting Executed:")
 
     for name, dataset in (
         ("Train", df_train),
-        ("Validation", df_val),
         ("Test", df_test),
     ):
         counts = dataset[target_column].value_counts().to_dict()
         ratios = dataset[target_column].value_counts(normalize=True).round(4).to_dict()
 
         print(
-            f"    - {name}: {dataset.shape} | "
+            f"    - {name:<6}: {dataset.shape[0]:>6} rows | "
             f"Class count: {counts} | "
             f"Distribution: {ratios}"
         )
 
-    return df_train, df_val, df_test
+    return df_train, df_test
 
 
 if __name__ == "__main__":
@@ -153,11 +147,12 @@ if __name__ == "__main__":
 
     TARGET_COLUMN = CONFIG["target"]
     SPLIT_PARAMS = CONFIG["data"]["split_params"]
+    PREP_MODE = CONFIG["data"].get("preprocessing_mode", "mlops_optimized")
 
     try:
-        raw_data = load_raw_training_data()
+        raw_data = load_raw_training_data(mode=PREP_MODE)
 
-        train_set, val_set, test_set = split_train_val_test(
+        train_set, test_set = split_train_test(
             raw_data,
             target_column=TARGET_COLUMN,
             split_params=SPLIT_PARAMS,

@@ -4,7 +4,8 @@ Utility and Helper Functions Module
 Purpose:
     This module provides shared helper functions for logging, execution timing,
     MLOps run lineage tracking, exporting performance artifacts to disk,
-    and computing financial calibration metrics.
+    computing financial calibration metrics, auditing scorecard monotonicity,
+    and generating business strategy (Decisioning) artifacts.
 
 Usages:
     Import helper functions directly into other scripts (e.g., 'from src.utils import get_timestamp').
@@ -25,7 +26,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 
 # ==============================================================================
@@ -34,9 +35,6 @@ from typing import Dict, Any
 def get_timestamp() -> str:
     """
     Generates a current localized timestamp string for logging
-
-    Returns:
-        str: Formatted time string (YYYY-MM-DD HH:MM:SS).
     """
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -44,7 +42,6 @@ def get_timestamp() -> str:
 def get_run_directory(base_artifacts_dir: pathlib.Path) -> pathlib.Path:
     """
     Scans the directory and dynamically generates a unique path for the current run.
-    Naming pattern: YYYY-MM-DD_run_X (e.g., 2026-07-17_run_1)
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
     runs_master_dir = base_artifacts_dir / "runs"
@@ -87,11 +84,6 @@ def extract_structural_bins(
 ) -> pd.DataFrame:
     """
     Converts cleaned raw float profiles into nominal string bin labels.
-    Serves as the vital matching data interface for the Scorecard Scaling Engine.
-
-    Note:
-        The woe_transformer parameter is explicitly typed as Any to neutralize
-        circular compilation loops between utils and preprocessing layers.
     """
     X_bins = X_clean.copy()
     for col in woe_transformer.numerical_features:
@@ -108,9 +100,7 @@ def extract_structural_bins(
 # 3. Artifact Exporting Mechanics (Tabular & Governance Logs)
 # ==============================================================================
 def save_metrics(metrics: Dict[str, Any], file_path: pathlib.Path) -> None:
-    """
-    Saves validation scores and reports into the artifacts folder as JSON file.
-    """
+    """Saves validation scores and reports into JSON format."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=4)
@@ -120,9 +110,7 @@ def save_metrics(metrics: Dict[str, Any], file_path: pathlib.Path) -> None:
 def save_woe_tables(
     woe_dicts: Dict[str, Dict[str, float]], folder_path: pathlib.Path
 ) -> None:
-    """
-    Exports computed WOE lookup tables into individual CSV files for historical auditing.
-    """
+    """Exports computed WOE lookup tables into individual CSV files."""
     folder_path.mkdir(parents=True, exist_ok=True)
     for col, mapping in woe_dicts.items():
         df = pd.DataFrame(
@@ -130,87 +118,97 @@ def save_woe_tables(
         )
         output_file = folder_path / f"{col}_woe.csv"
         df.to_csv(output_file, index=False)
-    print(
-        f"[UTILS] ALL WOE tables ({len(woe_dicts)} files) successfully exported to: {folder_path}"
-    )
+    print(f"[UTILS] ALL WOE tables successfully exported to: {folder_path}")
 
 
 def save_iv_scores(iv_scores: Dict[str, float], file_path: pathlib.Path) -> None:
-    """
-    Saves the calculated Information Value (IV) scores into a JSON file for model governance.
-    """
+    """Saves IV scores into a JSON file."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(iv_scores, file, indent=4)
-    print(f"[UTILS] IV Scores successfully saved to: {file_path}")
 
 
 # ==============================================================================
 # 4. Analytical Charts & Statistical Visualizations Engine
 # ==============================================================================
-def save_roc_curve(y_true: Any, y_prob: Any, file_path: pathlib.Path) -> None:
+def save_roc_curve(
+    y_true: Any,
+    y_prob: Any,
+    file_path: pathlib.Path,
+    optimal_pd: float = None,
+    optimal_score: float = None,
+    optimal_sensitivity: float = None,
+    optimal_specificity: float = None,
+    title_suffix: str = "",
+) -> None:
     """
-    Plots a publication-quality Receiver Operating Characteristic (ROC) curve.
+    Plots a publication-quality ROC curve. Highlights the Optimal Youden Cut-off
+    if thresholds are provided (Step 17+ Decisioning).
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
     roc_auc = auc(fpr, tpr)
 
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(7, 6))
     ax.plot(
-        fpr, tpr, color="#1f77b4", lw=2.5, label=f"Baseline Model (AUC = {roc_auc:.4f})"
+        fpr,
+        tpr,
+        color="#1f77b4",
+        lw=2.5,
+        label=f"ROC Curve (AUC = {roc_auc:.4f})",
     )
-    ax.plot([0, 1], [0, 1], color="#7f7f7f", lw=1.2, linestyle="--")
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        color="#ff7f0e",
+        lw=1.5,
+        linestyle="--",
+        label="Random classifier",
+    )
+
+    # Pinpoint Optimal Cut-off on the curve if parameters are supplied
+    if optimal_pd is not None:
+        idx = np.argmin(np.abs(thresholds - optimal_pd))
+        ax.plot(
+            fpr[idx],
+            tpr[idx],
+            marker="o",
+            markersize=9,
+            color="#1f77b4",
+            label=f"Optimal Threshold\nPD cut-off = {optimal_pd:.4f}\nScore cut-off = {optimal_score:.1f}",
+        )
+        ax.annotate(
+            f"Sensitivity = {optimal_sensitivity:.2%}\nSpecificity = {optimal_specificity:.2%}",
+            xy=(fpr[idx], tpr[idx]),
+            xytext=(fpr[idx] + 0.05, tpr[idx] - 0.12),
+            arrowprops=dict(arrowstyle="->", color="#1e293b", lw=1.2),
+            fontsize=10,
+        )
 
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel(
-        "False Boxitive Rate - FPR (1 - Specificity)",
-        fontsize=11,
-        labelpad=10,
-        color="#1e293b",
-    )
-    ax.set_ylabel(
-        "True Positive Rate - TPR (Sensitivity)",
-        fontsize=11,
-        labelpad=10,
-        color="#1e293b",
-    )
-    ax.set_title(
-        "Receiver Operating Characteristic (ROC) Curve",
-        fontsize=13,
-        fontweight="bold",
-        pad=15,
-        color="#0f172a",
-    )
+    ax.set_xlabel("False Positive Rate (1 - Specificity)", fontsize=11, labelpad=10)
+    ax.set_ylabel("True Positive Rate (Sensitivity)", fontsize=11, labelpad=10)
+
+    title = f"Receiver Operating Characteristic Curve {title_suffix}"
+    ax.set_title(title.strip(), fontsize=13, fontweight="bold", pad=15)
+
     ax.grid(True, linestyle=":", alpha=0.6, color="#cbd5e1")
-    ax.legend(
-        loc="lower right",
-        fontsize=10,
-        frameon=True,
-        facecolor="white",
-        edgecolor="none",
-    )
+    ax.legend(loc="lower right", fontsize=10, frameon=True)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("#64748b")
-    ax.spines["bottom"].set_color("#64748b")
-    ax.tick_params(colors="#64748b", labelsize=9)
 
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"[UTILS] Publication-grade ROC Curve successfully exported to: {file_path}")
+    print(f"[UTILS] ROC Curve {title_suffix} successfully exported to: {file_path}")
 
 
 def save_classification_report(
     y_true: Any, y_pred: Any, y_prob: Any, file_path: pathlib.Path
 ) -> None:
-    """
-    Calculates Confusion Matrix components, derives F1-Score metrics,
-    computes the Kolmogorov-Smirnov (KS) statistic, Gini Index, and exports a structural JSON report.
-    """
+    """Calculates Confusion Matrix, F1, KS, Gini, and exports JSON report."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
@@ -240,18 +238,12 @@ def save_classification_report(
 
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(report_metrics, file, indent=4)
-    print(
-        f"[UTILS] Classification Report (KS, Gini, F1) successfully saved to: {file_path}"
-    )
 
 
 def save_probability_distribution(
     y_true: Any, y_prob: Any, file_path: pathlib.Path
 ) -> None:
-    """
-    Plots a professional, clean technical visualization of the Logistic Regression
-    Sigmoid function curve mapped against actual and predicted risk observations.
-    """
+    """Plots Logistic Regression Sigmoid curve mapped against predicted PDs."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     y_true_arr = np.array(y_true)
     y_prob_arr = np.array(y_prob)
@@ -270,18 +262,14 @@ def save_probability_distribution(
         sigmoid_curve,
         color="#64748b",
         lw=2,
-        linestyle="-",
         label="Theoretical Sigmoid Fit",
     )
-
     ax.scatter(
         logits[y_true_arr == 0],
         y_true_arr[y_true_arr == 0],
         color="#1f77b4",
         alpha=0.6,
-        edgecolors="none",
         s=50,
-        zorder=2,
         label="Actual Good (Class 0)",
     )
     ax.scatter(
@@ -289,65 +277,32 @@ def save_probability_distribution(
         y_true_arr[y_true_arr == 1],
         color="#d62728",
         alpha=0.6,
-        edgecolors="none",
         s=50,
-        zorder=2,
         label="Actual Bad (Class 1)",
     )
-
     ax.scatter(
-        logits,
-        y_prob_arr,
-        color="#0f172a",
-        s=25,
-        marker="o",
-        alpha=0.5,
-        zorder=3,
-        label="Predicted Probability (PD)",
+        logits, y_prob_arr, color="#0f172a", s=25, alpha=0.5, label="Predicted PD"
     )
 
-    ax.set_xlabel(
-        "Log-Odds / Logit Score (Linear Combination)",
-        fontsize=11,
-        labelpad=10,
-        color="#1e293b",
-    )
-    ax.set_ylabel(
-        "Probability of Default (PD) / Outcome Scale",
-        fontsize=11,
-        labelpad=10,
-        color="#1e293b",
-    )
+    ax.set_xlabel("Log-Odds / Logit Score")
+    ax.set_ylabel("Probability of Default (PD)")
     ax.set_title(
-        "Logistic Regression Alignment: Sigmoid Curve & Predictions",
-        fontsize=12,
-        fontweight="bold",
-        pad=15,
-        color="#0f172a",
+        "Logistic Regression Alignment: Sigmoid Curve", fontsize=12, fontweight="bold"
     )
-
-    ax.grid(True, linestyle=":", alpha=0.5, color="#cbd5e1")
-    ax.legend(
-        loc="upper left", fontsize=9, frameon=True, facecolor="white", edgecolor="none"
-    )
+    ax.legend(loc="upper left", fontsize=9)
+    ax.grid(True, linestyle=":", alpha=0.5)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("#64748b")
-    ax.spines["bottom"].set_color("#64748b")
-    ax.tick_params(colors="#64748b", labelsize=9)
 
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"[UTILS] Sigmoid Alignment chart successfully exported to: {file_path}")
 
 
 def save_confusion_matrix_heatmap(
     y_true: Any, y_pred: Any, file_path: pathlib.Path
 ) -> None:
-    """
-    Plots a crisp, publication-grade confusion matrix heatmap using pure matplotlib.
-    """
+    """Plots confusion matrix heatmap using pure matplotlib."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     cm = confusion_matrix(y_true, y_pred)
 
@@ -358,8 +313,8 @@ def save_confusion_matrix_heatmap(
         for j in range(cm.shape[1]):
             text_color = "white" if cm[i, j] > (cm.max() / 2) else "#0f172a"
             ax.text(
-                x=j,
-                y=i,
+                j,
+                i,
                 s=f"{cm[i, j]:,}",
                 va="center",
                 ha="center",
@@ -370,128 +325,221 @@ def save_confusion_matrix_heatmap(
 
     ax.set_xticks([0, 1])
     ax.set_yticks([0, 1])
-    ax.set_xticklabels(
-        ["Predicted Good (0)", "Predicted Bad (1)"], fontsize=10, color="#1e293b"
-    )
-    ax.set_yticklabels(
-        ["Actual Good (0)", "Actual Bad (1)"], fontsize=10, color="#1e293b"
-    )
-
-    ax.set_xlabel(
-        "Predicted Risk Classifications", labelpad=12, fontsize=11, color="#1e293b"
-    )
-    ax.set_ylabel(
-        "Actual Risk Classifications", labelpad=12, fontsize=11, color="#1e293b"
-    )
-    ax.set_title(
-        "Confusion Matrix Structural Distribution",
-        pad=20,
-        fontsize=12,
-        fontweight="bold",
-        color="#0f172a",
-    )
+    ax.set_xticklabels(["Predicted Good (0)", "Predicted Bad (1)"])
+    ax.set_yticklabels(["Actual Good (0)", "Actual Bad (1)"])
+    ax.set_title("Confusion Matrix", pad=20, fontsize=12, fontweight="bold")
 
     for spine in ax.spines.values():
         spine.set_visible(False)
 
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"[UTILS] Confusion Matrix Heatmap successfully exported to: {file_path}")
 
 
-# ==============================================================================
-# 5. Champion Model Auto-Selection & Evaluation Logic
-# ==============================================================================
-def calculate_ks(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """
-    Computes the Kolmogorov-Smirnov (KS) statistic directly for model evaluation.
+def save_calibration_plot(
+    y_true: Any, y_prob: Any, file_path: pathlib.Path, n_bins: int = 10
+) -> None:
+    """Plots Calibration Curve (Reliability Diagram)."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    Args:
-        y_true (np.ndarray): Array of true binary labels (1=Bad, 0=Good).
-        y_prob (np.ndarray): Array of predicted probabilities for the Bad class.
-
-    Returns:
-        float: The maximum KS separation statistic.
-    """
-    df = pd.DataFrame({"y_true": y_true, "y_prob": y_prob}).sort_values(
-        by="y_prob", ascending=False
+    df = pd.DataFrame(
+        {
+            "Actual": np.asarray(y_true, dtype=int),
+            "Predicted_PD": np.asarray(y_prob, dtype=float),
+        }
     )
-    df["cum_good"] = (df["y_true"] == 0).cumsum() / (df["y_true"] == 0).sum()
-    df["cum_bad"] = (df["y_true"] == 1).cumsum() / (df["y_true"] == 1).sum()
-    return float(np.abs(df["cum_bad"] - df["cum_good"]).max())
+    df["PD_band"] = pd.qcut(df["Predicted_PD"], q=n_bins, duplicates="drop")
+
+    calib_table = (
+        df.groupby("PD_band", observed=True)
+        .agg(
+            Mean_predicted_PD=("Predicted_PD", "mean"),
+            Actual_bad_rate=("Actual", "mean"),
+        )
+        .reset_index()
+    )
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.plot(
+        calib_table["Mean_predicted_PD"],
+        calib_table["Actual_bad_rate"],
+        marker="o",
+        markersize=6,
+        color="#1f77b4",
+        lw=2,
+        label="Observed",
+    )
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        linestyle="--",
+        color="#7f7f7f",
+        lw=1.5,
+        label="Perfect calibration",
+    )
+
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.0])
+    ax.set_xlabel("Mean predicted probability of default")
+    ax.set_ylabel("Actual bad rate")
+    ax.set_title("Calibration Plot", fontsize=13, fontweight="bold", pad=15)
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend(loc="upper left", fontsize=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.savefig(file_path, dpi=300, bbox_inches="tight")
+    plt.close()
 
 
+def save_candidate_evaluation_charts(
+    metrics_log: Dict[str, Any], folder_path: pathlib.Path
+) -> None:
+    """Generates 3 critical evaluation bar charts for Candidate Models."""
+    folder_path.mkdir(parents=True, exist_ok=True)
+    models, aucs, briers, features, colors = [], [], [], [], []
+
+    for model_key, results in metrics_log.items():
+        if model_key in ["champion", "one_se_threshold"]:
+            continue
+        models.append(results["summary"]["Model"])
+        aucs.append(results["summary"]["OOF AUC"])
+        briers.append(results["summary"]["OOF Brier"])
+        features.append(results["summary"]["Number of features"])
+        colors.append(
+            "#4caf50" if model_key == metrics_log.get("champion") else "#d62728"
+        )
+
+    # Chart 1: AUC
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    bars = ax.barh(models, aucs, color=colors, edgecolor="black", alpha=0.85)
+    for bar, val in zip(bars, aucs):
+        ax.text(
+            val - 0.02,
+            bar.get_y() + bar.get_height() / 2,
+            f" {val:.4f}",
+            va="center",
+            ha="right",
+            color="white",
+            fontweight="bold",
+        )
+    ax.set_xlabel("Out-of-fold AUC")
+    ax.set_title("OOF AUC Comparison", fontweight="bold")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "candidate_models_auc_comparison.png", dpi=300)
+    plt.close()
+
+    # Chart 2: Brier
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    bars = ax.barh(models, briers, color=colors, edgecolor="black", alpha=0.85)
+    for bar, val in zip(bars, briers):
+        ax.text(
+            val - 0.005,
+            bar.get_y() + bar.get_height() / 2,
+            f" {val:.4f}",
+            va="center",
+            ha="right",
+            color="white",
+            fontweight="bold",
+        )
+    ax.set_xlabel("Out-of-fold Brier score")
+    ax.set_title("OOF Brier Score Comparison", fontweight="bold")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "candidate_models_brier_comparison.png", dpi=300)
+    plt.close()
+
+    # Chart 3: Complexity
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    bars = ax.barh(models, features, color=colors, edgecolor="black", alpha=0.85)
+    for bar, val in zip(bars, features):
+        ax.text(
+            val - 0.2,
+            bar.get_y() + bar.get_height() / 2,
+            f" {int(val)}",
+            va="center",
+            ha="right",
+            color="white",
+            fontweight="bold",
+        )
+    ax.set_xlabel("Number of features")
+    ax.set_title("Model Complexity", fontweight="bold")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "candidate_models_complexity_comparison.png", dpi=300)
+    plt.close()
+
+
+# ==============================================================================
+# 5. Champion Model Auto-Selection Logic (1-SE Rule)
+# ==============================================================================
 def evaluate_and_select_champion(
-    y_val_true: np.ndarray,
-    y_val_prob_base: np.ndarray,
-    y_val_prob_sub: np.ndarray,
-    model_baseline: Any,
-    model_subset: Any,
-    champ_cfg: Dict[str, Any],
+    candidate_results: Dict[str, Dict[str, Any]], champ_cfg: Dict[str, Any]
 ) -> tuple:
-    """
-    Evaluates both the Baseline and Best Subset models on the validation set,
-    and automatically selects the Champion Model based on predefined rules
-    and a margin of equivalence.
+    """Selects Champion Model based on 1-SE Rule and Business Eligibility."""
+    print("\n" + "=" * 80)
+    print("🏆 [CHAMPION AUTO-SELECTION] EVALUATING CANDIDATES (1-SE RULE)")
+    print("=" * 80)
 
-    Args:
-        y_val_true (np.ndarray): True labels of the validation set.
-        y_val_prob_base (np.ndarray): Predicted probabilities from the Baseline model.
-        y_val_prob_sub (np.ndarray): Predicted probabilities from the Subset model.
-        model_baseline (Any): The trained Baseline model object.
-        model_subset (Any): The trained Best Subset model object.
-        champ_cfg (Dict[str, Any]): Configuration dict for champion selection.
+    prediction_context = champ_cfg.get("prediction_context", "pre_decision")
+    manual_override = champ_cfg.get("manual_override", None)
 
-    Returns:
-        tuple: (champion_key, champion_model, metrics_log)
-    """
-    # Calculate AUC once to derive Gini
-    auc_base = float(auc(*roc_curve(y_val_true, y_val_prob_base)[:2]))
-    auc_sub = float(auc(*roc_curve(y_val_true, y_val_prob_sub)[:2]))
+    summaries = []
+    for m_key, results in candidate_results.items():
+        summary = results["summary"].copy()
+        summary["Model key"] = m_key
+        summaries.append(summary)
 
-    # Calculate Evaluation Metrics
-    metrics_log = {
-        "baseline": {
-            "kolmogorov_smirnov_ks": calculate_ks(y_val_true, y_val_prob_base),
-            "gini_index": 2.0 * auc_base - 1.0,
-            "roc_auc": auc_base,
-        },
-        "subset": {
-            "kolmogorov_smirnov_ks": calculate_ks(y_val_true, y_val_prob_sub),
-            "gini_index": 2.0 * auc_sub - 1.0,
-            "roc_auc": auc_sub,
-        },
-    }
+    table = pd.DataFrame(summaries)
 
-    # Extract Auto-Selection Logic parameters
-    primary = champ_cfg.get("primary_metric", "kolmogorov_smirnov_ks")
-    secondary = champ_cfg.get(
-        "secondary_metric", "gini_index"
-    )  # Tie-breaker updated to Gini
-    margin = champ_cfg.get("margin_of_equivalence", 0.01)
-
-    diff_primary = metrics_log["baseline"][primary] - metrics_log["subset"][primary]
-
-    if abs(diff_primary) <= margin:
-        # Tie-breaker logic (Secondary Metric) if within equivalence margin
-        diff_sec = metrics_log["baseline"][secondary] - metrics_log["subset"][secondary]
-        champion_key = "baseline" if diff_sec > 0 else "subset"
+    if prediction_context == "pre_decision":
+        eligible_keys = {
+            "model_intermediate_predecision_full_financial",
+            "model_2_explainable_predecision",
+        }
     else:
-        # Strict winner logic
-        champion_key = "baseline" if diff_primary > 0 else "subset"
+        eligible_keys = set(table["Model key"])
 
-    champion_model = model_baseline if champion_key == "baseline" else model_subset
+    table["Business eligible"] = table["Model key"].isin(eligible_keys)
+    eligible_table = table.loc[table["Business eligible"]].copy()
 
-    print("\n[CHAMPION AUTO-SELECTION] Validation Set Evaluation:")
-    print(
-        f"  -> Baseline Model - {primary}: {metrics_log['baseline'][primary]:.4f} | GINI: {metrics_log['baseline']['gini_index']:.4f}"
-    )
-    print(
-        f"  -> Best Subset    - {primary}: {metrics_log['subset'][primary]:.4f} | GINI: {metrics_log['subset']['gini_index']:.4f}"
-    )
-    print(f"  🏆 Winner: {champion_key.upper()} (Margin of Equivalence: {margin})")
+    if eligible_table.empty:
+        raise ValueError("No models are eligible for deployment.")
 
-    return champion_key, champion_model, metrics_log
+    if manual_override:
+        champion_key = manual_override
+        one_se_threshold = None
+        print(f"  -> [WARNING] Manual Override Forcing Champion: {champion_key}")
+    else:
+        best_index = eligible_table["Mean CV AUC"].idxmax()
+        best_mean_auc = float(eligible_table.loc[best_index, "Mean CV AUC"])
+        best_se_auc = float(eligible_table.loc[best_index, "SE CV AUC"])
+
+        one_se_threshold = best_mean_auc - best_se_auc
+
+        table["Within eligible 1-SE"] = table["Business eligible"] & (
+            table["Mean CV AUC"] >= one_se_threshold
+        )
+        one_se_candidates = table.loc[table["Within eligible 1-SE"]].sort_values(
+            ["Number of features", "Mean CV AUC", "OOF Brier"],
+            ascending=[True, False, True],
+        )
+
+        selected_row = one_se_candidates.iloc[0]
+        champion_key = selected_row["Model key"]
+
+        print(f"  -> Eligible 1-SE Threshold: {one_se_threshold:.5f}")
+        print(f"  -> Selected by 1-SE Parsimony: {selected_row['Model']}")
+
+    print(f"  🏆 FINAL CHAMPION: {champion_key.upper()}")
+    candidate_results["champion"] = champion_key
+    candidate_results["one_se_threshold"] = one_se_threshold
+
+    return champion_key, candidate_results
 
 
 # ==============================================================================
@@ -500,35 +548,19 @@ def evaluate_and_select_champion(
 def calculate_calibration_error(
     y_prob: np.ndarray, actual_scores: pd.Series, scaling_config: Dict[str, Any]
 ) -> Dict[str, float]:
-    """
-    Computes the financial calibration error caused by binning and point rounding.
-    Compares the theoretical continuous score against the actual discrete scorecard points.
-
-    Args:
-        y_prob (np.ndarray): Array of predicted probabilities for the Bad class.
-        actual_scores (pd.Series): Actual discrete points generated by the Scorecard.
-        scaling_config (Dict[str, Any]): Configuration dictionary containing base_score, base_odds, and pdo.
-
-    Returns:
-        Dict[str, float]: Dictionary containing Mean Absolute Error (MAE), Max Error, and Variance Ratio.
-    """
+    """Computes financial calibration error (Continuous vs Discrete Scores)."""
     base_score = scaling_config.get("base_score", 600)
     base_odds = scaling_config.get("base_odds", 50.0)
     pdo = scaling_config.get("pdo", 20)
 
-    # 1. Financial Engineering Constants
     factor = pdo / np.log(2)
     offset = base_score - factor * np.log(base_odds)
 
-    # 2. Calculate Theoretical Continuous Scores from Probabilities (Log-Odds)
     eps = 1e-10
     clipped_prob = np.clip(y_prob, eps, 1.0 - eps)
-    # Note: In credit risk, Odds = Good / Bad = (1 - PD) / PD
     log_odds = np.log((1.0 - clipped_prob) / clipped_prob)
 
     theoretical_scores = offset + factor * log_odds
-
-    # 3. Calculate Error Metrics between Theoretical vs Actual Rounded Scores
     actual_scores_arr = actual_scores.to_numpy()
     absolute_errors = np.abs(theoretical_scores - actual_scores_arr)
 
@@ -539,3 +571,203 @@ def calculate_calibration_error(
             np.var(actual_scores_arr) / np.var(theoretical_scores)
         ),
     }
+
+
+# ==============================================================================
+# 7. Decision Strategy & Business Impact Engine (Steps 17 - 20)
+# ==============================================================================
+def calculate_optimal_cutoff(y_true: Any, y_prob: Any) -> Dict[str, float]:
+    """
+    Identifies the optimal PD threshold by maximizing the Youden Index (J).
+    J = Sensitivity (TPR) + Specificity (1 - FPR) - 1.
+    """
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    youden_j = tpr - fpr
+    optimal_idx = np.argmax(youden_j)
+
+    return {
+        "optimal_pd_threshold": float(thresholds[optimal_idx]),
+        "sensitivity": float(tpr[optimal_idx]),
+        "specificity": float(1 - fpr[optimal_idx]),
+        "youden_index": float(youden_j[optimal_idx]),
+    }
+
+
+def generate_approval_table(
+    y_true: np.ndarray, y_prob: np.ndarray, scores: pd.Series
+) -> pd.DataFrame:
+    """
+    Sweeps through score deciles to simulate business approval strategies.
+    Computes Approval Rate, Approved Bad Rate, Bad Capture, and Good Rejection.
+    """
+    df = pd.DataFrame(
+        {"Actual": np.asarray(y_true, dtype=int), "Score": scores.to_numpy()}
+    )
+
+    # Define cut-offs using dynamic percentiles to mimic real-world business sweeping
+    cut_offs = np.percentile(df["Score"], [10, 30, 50, 70, 90])
+    cut_offs = sorted(list(set(cut_offs)), reverse=True)
+
+    results = []
+    total_customers = len(df)
+    total_bad = df["Actual"].sum()
+    total_good = total_customers - total_bad
+
+    for cutoff in cut_offs:
+        approved_mask = df["Score"] >= cutoff
+        rejected_mask = ~approved_mask
+
+        approved_customers = approved_mask.sum()
+        approved_bad = df.loc[approved_mask, "Actual"].sum()
+        rejected_bad = df.loc[rejected_mask, "Actual"].sum()
+        rejected_good = (~df.loc[rejected_mask, "Actual"].astype(bool)).sum()
+
+        results.append(
+            {
+                "Score_Cutoff": cutoff,
+                "Approval_Rate": (
+                    approved_customers / total_customers if total_customers > 0 else 0
+                ),
+                "Approved_Bad_Rate": (
+                    approved_bad / approved_customers if approved_customers > 0 else 0
+                ),
+                "Bad_Capture_Rate": rejected_bad / total_bad if total_bad > 0 else 0,
+                "Good_Rejection_Rate": (
+                    rejected_good / total_good if total_good > 0 else 0
+                ),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
+def save_business_strategy_plots(
+    approval_table: pd.DataFrame, folder_path: pathlib.Path
+) -> None:
+    """
+    Generates 3 critical business decision trade-off plots:
+    1. Approval Rate by Cut-off.
+    2. Approved Bad Rate by Cut-off.
+    3. The overall Business Trade-off curve.
+    """
+    folder_path.mkdir(parents=True, exist_ok=True)
+
+    # Plot 1: Approval Rate
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.plot(
+        approval_table["Score_Cutoff"],
+        approval_table["Approval_Rate"],
+        marker="o",
+        markersize=8,
+        lw=2,
+    )
+    ax.set_title("Approval Rate by Credit Score Cut-off", fontsize=13, pad=15)
+    ax.set_xlabel("Score cut-off")
+    ax.set_ylabel("Approval rate")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    for _, row in approval_table.iterrows():
+        ax.annotate(
+            f"{row['Approval_Rate']:.1%}",
+            (row["Score_Cutoff"], row["Approval_Rate"]),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+        )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "approval_rate_by_cutoff.png", dpi=300)
+    plt.close()
+
+    # Plot 2: Approved Bad Rate
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.plot(
+        approval_table["Score_Cutoff"],
+        approval_table["Approved_Bad_Rate"],
+        marker="o",
+        markersize=8,
+        lw=2,
+    )
+    ax.set_title("Approved Bad Rate by Credit Score Cut-off", fontsize=13, pad=15)
+    ax.set_xlabel("Score cut-off")
+    ax.set_ylabel("Bad rate of approved customers")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    for _, row in approval_table.iterrows():
+        ax.annotate(
+            f"{row['Approved_Bad_Rate']:.1%}",
+            (row["Score_Cutoff"], row["Approved_Bad_Rate"]),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+        )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "approved_bad_rate_by_cutoff.png", dpi=300)
+    plt.close()
+
+    # Plot 3: Trade-off
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.plot(
+        approval_table["Approval_Rate"],
+        approval_table["Approved_Bad_Rate"],
+        marker="o",
+        markersize=8,
+        lw=2,
+    )
+    ax.set_title(
+        "Trade-off between Approval Rate and Approved Bad Rate", fontsize=13, pad=15
+    )
+    ax.set_xlabel("Approval rate")
+    ax.set_ylabel("Approved bad rate")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    for _, row in approval_table.iterrows():
+        ax.annotate(
+            f"Score $\\geq$ {int(row['Score_Cutoff'])}",
+            (row["Approval_Rate"], row["Approved_Bad_Rate"]),
+            textcoords="offset points",
+            xytext=(10, 5),
+            ha="left",
+        )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(folder_path / "tradeoff_approval_vs_bad_rate.png", dpi=300)
+    plt.close()
+    print(f"[UTILS] Business Strategy Plots successfully exported to: {folder_path}")
+
+
+def audit_scorecard_results(
+    test_scores: pd.Series, y_test_prob: np.ndarray, y_test_true: pd.Series
+) -> None:
+    """Audits scorecard monotonicity and constraints."""
+    score_pd_corr = np.corrcoef(test_scores, y_test_prob)[0, 1]
+    if score_pd_corr >= 0:
+        raise ValueError(
+            f"[CRITICAL FAILURE] Correlation(Score, PD) = {score_pd_corr:.4f}. Score must be inversely proportional to PD!"
+        )
+    print(f"  -> [PASS] Correlation(Score, PD) Check: {score_pd_corr:.4f} < 0")
+
+    print("\n======================================================================")
+    print("📈 SCORE BAND MONOTONICITY AUDIT (TEST DATASET)")
+    print("======================================================================")
+
+    df = pd.DataFrame({"credit_score": test_scores, "target": y_test_true.to_numpy()})
+    df["score_band"] = pd.qcut(df["credit_score"], q=10, duplicates="drop")
+    score_band_audit = (
+        df.groupby("score_band", observed=True)
+        .agg(
+            Number_of_observations=("target", "size"),
+            Mean_Credit_Score=("credit_score", "mean"),
+            Actual_Bad_Rate=("target", "mean"),
+        )
+        .reset_index()
+    )
+
+    print(f"  Score Band           | Count | Mean Score | Actual Bad Rate")
+    print(f"  ---------------------|-------|------------|----------------")
+    for _, row in score_band_audit.iterrows():
+        print(
+            f"  {str(row['score_band']):<20} | {row['Number_of_observations']:>5.0f} | {row['Mean_Credit_Score']:>10.1f} | {row['Actual_Bad_Rate']:>14.2%}"
+        )
+    print("======================================================================\n")

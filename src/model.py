@@ -1,303 +1,270 @@
 """
-Baseline Model Training Pipeline for Credit Scoring
----------------------------------------------------
-This module wraps the scikit-learn Logistic Regression engine to fulfill
-banking standards, supporting configuration and strict coefficient auditing.
-Includes Step-wise Backward Elimination based on Sign Reversal, P-values, and VIF.
+Model Training and Evaluation Pipeline for Credit Scoring
+---------------------------------------------------------
+This module uses the statsmodels GLM (Generalized Linear Model) engine with a
+Binomial family (Logistic Regression) to fulfill strict banking audit standards.
+It provides 10-Fold Cross-Validation evaluation (for Champion selection) and
+final model fitting with comprehensive statistical extraction (P-values, CI, Odds Ratio).
 """
 
 import warnings
 import numpy as np
 import pandas as pd
-from statsmodels.discrete.discrete_model import Logit
+
+# [UPDATED] Direct imports to bypass the statsmodels.api (and 'tsa' module) bug
+# caused by pandas deprecation in newer environments.
+from statsmodels.genmod.generalized_linear_model import GLM
+from statsmodels.genmod.families.family import Binomial
+from statsmodels.tools.tools import add_constant
 from statsmodels.stats.outliers_influence import variance_inflation_factor
-from sklearn.linear_model import LogisticRegression
+
+from sklearn.metrics import roc_auc_score, roc_curve, brier_score_loss, log_loss
 from typing import Dict, Any, Optional, List, Tuple
 
 
 class CreditModelTrainer:
     """
-    Wraps the Logistic Regression model to handle dynamic hyperparameter extraction
-    and enforce banking risk validation workflows via Auto Step-wise Backward Elimination.
+    Wraps the statsmodels GLM algorithm. Provides OOF Cross-Validation metrics
+    and generates detailed statistical audit reports required for Scorecard scaling.
     """
 
-    def __init__(self, model_config: Dict[str, Any]) -> None:
+    def __init__(self, model_config: Dict[str, Any] = None) -> None:
         """
-        Initializes the model trainer by dynamically extracting hyperparameters.
+        Initializes the model trainer.
+        """
+        if model_config is None:
+            model_config = {}
 
-        Args:
-            model_config (Dict[str, Any]): The "model" Subtree parsed from config_yaml.
-        """
-        # Safe extraction
         lr_params = model_config.get("logistic_regression", {})
-
-        # Mapping parameters
-        self.random_state: int = lr_params.get("random_state", 42)
-        self.max_iter: int = lr_params.get("max_iter", 1000)
-        self.C: float = float(lr_params.get("c_parameter", 1.0))
-
-        # Regulatory Audit Thresholds
-        self.p_value_threshold: float = lr_params.get("p_value_threshold", 0.05)
         self.vif_threshold: float = lr_params.get("vif_threshold", 5.0)
 
-        # Placeholder for the underlying scikit-learn model object
-        self.model: Optional[LogisticRegression] = None
-
-        # Containers to store audited parameters for risk validation
+        self.model: Optional[Any] = None
         self.final_features_: List[str] = []
         self.intercept_: float = 0.0
         self.coefficients_: Dict[str, float] = {}
+        self.audit_report_: Dict[str, Any] = {}
+
+    def _calculate_vif(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Calculates Variance Inflation Factor for multi-collinearity checks."""
+        X_const = add_constant(X.astype(float), has_constant="add")
+        rows = []
+        for i, col in enumerate(X_const.columns):
+            if col == "const":
+                continue
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    vif_val = variance_inflation_factor(X_const.values, i)
+            except Exception:
+                vif_val = np.inf
+            rows.append({"Variable": col, "VIF": float(vif_val)})
+
+        return (
+            pd.DataFrame(rows)
+            .sort_values("VIF", ascending=False)
+            .reset_index(drop=True)
+        )
+
+    def _calculate_ks(self, y_true: np.ndarray, probability: np.ndarray) -> float:
+        """Computes the Kolmogorov-Smirnov (KS) statistic."""
+        fpr, tpr, _ = roc_curve(y_true, probability)
+        return float(np.max(tpr - fpr))
+
+    def _calculate_calibration(
+        self, y_true: np.ndarray, probability: np.ndarray
+    ) -> Dict[str, float]:
+        """Calculates Calibration Intercept and Slope using GLM."""
+        probability = np.clip(np.asarray(probability, dtype=float), 1e-8, 1 - 1e-8)
+        predicted_logit = np.log(probability / (1 - probability))
+        calibration_X = add_constant(predicted_logit, has_constant="add")
+
+        try:
+            calibration_model = GLM(
+                np.asarray(y_true, dtype=int), calibration_X, family=Binomial()
+            ).fit()
+
+            return {
+                "Calibration intercept": float(calibration_model.params.iloc[0]),
+                "Calibration slope": float(calibration_model.params.iloc[1]),
+            }
+        except Exception:
+            return {"Calibration intercept": np.nan, "Calibration slope": np.nan}
+
+    def evaluate_cv(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        cv_splits: List[Tuple[np.ndarray, np.ndarray]],
+        model_key: str = "model",
+        model_label: str = "Candidate Model",
+    ) -> Dict[str, Any]:
+        """
+        Evaluates the feature set using exactly the same Stratified K-Fold splits.
+        Calculates OOF probabilities, fold metrics, VIF, and coefficient stability.
+        """
+        X_float = X.astype(float)
+        y_int = y.astype(int)
+
+        oof_probability = np.full(len(X), np.nan, dtype=float)
+        fold_metrics = []
+        coefficient_rows = []
+
+        for fold_number, (train_index, valid_index) in enumerate(cv_splits, start=1):
+            X_fold_train = add_constant(X_float.iloc[train_index], has_constant="add")
+            X_fold_valid = add_constant(X_float.iloc[valid_index], has_constant="add")
+
+            y_fold_train = y_int.iloc[train_index]
+            y_fold_valid = y_int.iloc[valid_index]
+
+            fold_model = GLM(y_fold_train, X_fold_train, family=Binomial()).fit()
+
+            fold_probability = np.asarray(fold_model.predict(X_fold_valid), dtype=float)
+            oof_probability[valid_index] = fold_probability
+
+            fold_auc = roc_auc_score(y_fold_valid, fold_probability)
+
+            fold_metrics.append(
+                {
+                    "Model key": model_key,
+                    "Model": model_label,
+                    "Fold": fold_number,
+                    "AUC": float(fold_auc),
+                    "Gini": float(2 * fold_auc - 1),
+                    "Brier": float(brier_score_loss(y_fold_valid, fold_probability)),
+                    "Log loss": float(log_loss(y_fold_valid, fold_probability)),
+                    "KS": self._calculate_ks(y_fold_valid, fold_probability),
+                }
+            )
+
+            for variable, coefficient in fold_model.params.items():
+                if variable == "const":
+                    continue
+                coefficient_rows.append(
+                    {
+                        "Model key": model_key,
+                        "Model": model_label,
+                        "Fold": fold_number,
+                        "Variable": variable,
+                        "Coefficient": float(coefficient),
+                        "Negative coefficient": bool(coefficient < 0),
+                    }
+                )
+
+        if np.isnan(oof_probability).any():
+            raise RuntimeError(f"[ERROR] {model_label}: OOF prediction incomplete.")
+
+        fold_metrics_table = pd.DataFrame(fold_metrics)
+        pooled_auc = roc_auc_score(y_int, oof_probability)
+        calibration = self._calculate_calibration(y_int, oof_probability)
+        vif_table = self._calculate_vif(X_float)
+
+        summary = {
+            "Model key": model_key,
+            "Model": model_label,
+            "Number of features": X.shape[1],
+            "OOF AUC": float(pooled_auc),
+            "OOF Gini": float(2 * pooled_auc - 1),
+            "OOF Brier": float(brier_score_loss(y_int, oof_probability)),
+            "OOF Log loss": float(log_loss(y_int, oof_probability)),
+            "OOF KS": self._calculate_ks(y_int, oof_probability),
+            "Mean CV AUC": float(fold_metrics_table["AUC"].mean()),
+            "SD CV AUC": float(fold_metrics_table["AUC"].std(ddof=1)),
+            "SE CV AUC": float(
+                fold_metrics_table["AUC"].std(ddof=1) / np.sqrt(len(fold_metrics_table))
+            ),
+            "Minimum fold AUC": float(fold_metrics_table["AUC"].min()),
+            "Maximum fold AUC": float(fold_metrics_table["AUC"].max()),
+            "Maximum VIF": float(vif_table["VIF"].max()),
+            "Any VIF > 5": bool((vif_table["VIF"] > self.vif_threshold).any()),
+            **calibration,
+        }
+
+        coefficient_table = pd.DataFrame(coefficient_rows)
+        coefficient_stability = coefficient_table.groupby(
+            ["Model key", "Model", "Variable"], as_index=False
+        ).agg(
+            Mean_coefficient=("Coefficient", "mean"),
+            SD_coefficient=("Coefficient", "std"),
+            Negative_fold_rate=("Negative coefficient", "mean"),
+        )
+
+        return {
+            "summary": summary,
+            "oof_probability": oof_probability,
+            "fold_metrics": fold_metrics_table,
+            "vif": vif_table,
+            "fold_coefficients": coefficient_table,
+            "coefficient_stability": coefficient_stability,
+        }
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "CreditModelTrainer":
         """
-        Fits the model using an iterative Step-wise Backward Elimination process.
-        Enforces 3 rigid rules for Scorecard compliance:
-        1. Sign Reversal (All Betas must be < 0).
-        2. Statistical Significance (P-value <= threshold).
-        3. Multicollinearity Stability (VIF <= threshold).
-
-        Args:
-            X (pd.DataFrame): Training feature matrix (must be WOE-encoded).
-            y (pd.Series): Target binary labels (1=Bad; 0=Good).
-
-        Returns:
-            CreditModelTrainer: The fitted instance itself.
+        Fits the final logistic regression model (via statsmodels GLM) on the entire dataset.
+        Extracts comprehensive statistical audits (p-values, CI, odds ratios).
         """
         self.final_features_ = list(X.columns)
         self.coefficients_.clear()
-        iteration = 1
+        self.audit_report_.clear()
 
         print("\n" + "=" * 80)
-        print("🏛️ [MODEL ENGINE] INITIATING REGULATORY BACKWARD ELIMINATION")
+        print("🏛️ [MODEL ENGINE] FITTING FINAL GLM MODEL & EXTRACTING STATISTICS")
         print("=" * 80)
 
-        while True:
-            if not self.final_features_:
-                raise ValueError(
-                    "[CRITICAL ERROR] All features were dropped during Backward Elimination. "
-                    "Please review your WOE encoding or Feature Selection constraints."
-                )
+        X_float = X.astype(float)
+        y_int = y.astype(int)
 
-            X_curr = X[self.final_features_]
+        X_const = add_constant(X_float, has_constant="add")
+        self.model = GLM(y_int, X_const, family=Binomial()).fit()
 
-            # 1. Core Engine Initialization (Scikit-Learn for penalized training)
-            self.model = LogisticRegression(
-                C=self.C,
-                max_iter=self.max_iter,
-                random_state=self.random_state,
-                solver="lbfgs",
-            )
-            self.model.fit(X_curr, y)
+        self.intercept_ = float(self.model.params.iloc[0])
+        for feature_name, coef_value in self.model.params.items():
+            if feature_name == "const":
+                self.intercept_ = float(coef_value)
+            else:
+                self.coefficients_[feature_name] = float(coef_value)
 
-            # ------------------------------------------------------------------
-            # RULE 1: SIGN REVERSAL CHECK (Beta >= 0)
-            # ------------------------------------------------------------------
-            betas = self.model.coef_[0]
-            positive_betas = [
-                (feat, beta)
-                for feat, beta in zip(self.final_features_, betas)
-                if beta >= 0
-            ]
+        confidence_interval = self.model.conf_int()
 
-            if positive_betas:
-                # Drop the feature with the highest positive Beta
-                worst_feature, worst_beta = max(
-                    positive_betas, key=lambda item: item[1]
-                )
-                print(
-                    f"  -> Iteration {iteration:<2}: Dropped '{worst_feature}' "
-                    f"(Rule 1 - Sign Reversal: Beta = {worst_beta:.4f} >= 0)"
-                )
-                self.final_features_.remove(worst_feature)
-                iteration += 1
-                continue
+        coefficient_table = pd.DataFrame(
+            {
+                "Variable": self.model.params.index,
+                "Coefficient": self.model.params.values,
+                "Standard error": self.model.bse.values,
+                "Z statistic": self.model.tvalues.values,
+                "P-value": self.model.pvalues.values,
+                "CI lower": confidence_interval[0].values,
+                "CI upper": confidence_interval[1].values,
+            }
+        )
 
-            # ------------------------------------------------------------------
-            # RULE 2: STATISTICAL SIGNIFICANCE CHECK (P-value > threshold)
-            # ------------------------------------------------------------------
-            X_const = X_curr.astype(float).copy()
-            X_const.insert(0, "const", 1.0)
-            high_p_values: List[Tuple[str, float]] = []
+        coefficient_table["Odds ratio"] = np.exp(coefficient_table["Coefficient"])
+        coefficient_table["Expected WOE sign"] = np.where(
+            coefficient_table["Variable"] == "const",
+            "Not applicable",
+            np.where(coefficient_table["Coefficient"] < 0, "Pass", "Review"),
+        )
 
-            try:
-                # Use isolated Logit class to retrieve exact statistical p-values
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    logit_model = Logit(y, X_const).fit(disp=0, method="newton")
-
-                p_values = logit_model.pvalues.drop("const", errors="ignore")
-                high_p_values = [
-                    (feat, pval)
-                    for feat, pval in p_values.items()
-                    if pval > self.p_value_threshold
-                ]
-            except Exception as e:
-                print(
-                    f"  -> [WARNING] P-value estimation failed ({e}). Skipping Rule 2 for this iteration."
-                )
-
-            if high_p_values:
-                # Drop the feature with the highest p-value
-                worst_feature, worst_pval = max(high_p_values, key=lambda item: item[1])
-                print(
-                    f"  -> Iteration {iteration:<2}: Dropped '{worst_feature}' "
-                    f"(Rule 2 - Insignificant: p-value = {worst_pval:.4f} > {self.p_value_threshold})"
-                )
-                self.final_features_.remove(worst_feature)
-                iteration += 1
-                continue
-
-            # ------------------------------------------------------------------
-            # RULE 3: MULTICOLLINEARITY CHECK (VIF > threshold)
-            # ------------------------------------------------------------------
-            vif_data: List[Tuple[str, float]] = []
-            cols = X_const.columns
-
-            for i in range(X_const.shape[1]):
-                if cols[i] == "const":
-                    continue
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        vif_val = variance_inflation_factor(X_const.values, i)
-                except Exception:
-                    vif_val = np.inf
-                vif_data.append((cols[i], float(vif_val)))
-
-            high_vifs = [
-                (feat, vif) for feat, vif in vif_data if vif > self.vif_threshold
-            ]
-
-            if high_vifs:
-                # Drop the feature with the highest VIF
-                worst_feature, worst_vif = max(high_vifs, key=lambda item: item[1])
-                print(
-                    f"  -> Iteration {iteration:<2}: Dropped '{worst_feature}' "
-                    f"(Rule 3 - Multicollinearity: VIF = {worst_vif:.4f} > {self.vif_threshold})"
-                )
-                self.final_features_.remove(worst_feature)
-                iteration += 1
-                continue
-
-            # If all 3 rules pass, the model is mathematically and statistically sound
-            break
+        self.audit_report_ = {
+            "model_summary": str(self.model.summary()),
+            "coefficient_statistics": coefficient_table.to_dict(orient="records"),
+        }
 
         print(
-            f"  -> [SUCCESS] Backward Elimination converged successfully in {iteration} iterations."
+            f"  -> [SUCCESS] GLM Model fitted with {len(self.final_features_)} features."
         )
-        print(f"  -> Final Validated Features Retained: {len(self.final_features_)}")
-
-        # Extract and catalog coefficients for regulatory risk auditing
-        self.intercept_ = float(self.model.intercept_[0])
-        for feature_name, coef_value in zip(self.final_features_, self.model.coef_[0]):
-            self.coefficients_[feature_name] = float(coef_value)
-
         return self
 
-    def predict_class(self, X: pd.DataFrame) -> np.ndarray:
-        """
-        Predicts binary hard labels (0 or 1) for credit decisions.
-
-        Args:
-            X (pd.DataFrame): Feature matrix to predict.
-
-        Returns:
-            np.ndarray: Binary array of 1s (Bad) and 0s (Good).
-        """
-        if self.model is None:
-            raise ValueError("[ERROR] Model must be fitted before running prediction.")
-
-        # Ensure only the surviving features are fed into the model
-        return self.model.predict(X[self.final_features_])
-
     def predict_probability(self, X: pd.DataFrame) -> np.ndarray:
-        """
-        Predicts the raw continuous Probability of Default (PD / Soft-labels).
-        Crucial metric utilized downstream for Scorecard points scaling.
-
-        Args:
-            X (pd.DataFrame): Feature matrix to predict.
-
-        Returns:
-            np.ndarray: Continuous probability array ranging between 0.0 and 1.0.
-        """
+        """Predicts the raw continuous Probability of Default (PD)."""
         if self.model is None:
             raise ValueError("[ERROR] Model must be fitted before running prediction.")
 
-        return self.model.predict_proba(X[self.final_features_])[:, 1]
-
-
-# ==============================================================================
-# INTERNAL TEST BLOCK (SANDBOX)
-# ==============================================================================
-if __name__ == "__main__":
-    print("--- Testing Regulatory Baseline Model Pipeline ---")
-
-    # 1. Mock dynamic config simulation directly from config.yaml structure
-    MOCK_CONFIG = {
-        "logistic_regression": {
-            "random_state": 42,
-            "max_iter": 100,
-            "c_parameter": 1.0,
-            "p_value_threshold": 0.05,
-            "vif_threshold": 5.0,
-        }
-    }
-
-    # 2. Mock surviving features generation (Simulating WOE Transformer matrix output)
-    np.random.seed(42)
-    mock_X = pd.DataFrame(
-        {
-            "person_age": np.random.uniform(-1.5, 1.5, size=1000),
-            "person_income": np.random.uniform(-2.0, 2.0, size=1000),
-            "person_home_ownership": np.random.uniform(-1.0, 1.0, size=1000),
-            "noise_feature": np.random.uniform(
-                -1.0, 1.0, size=1000
-            ),  # Intentionally weak feature
-        }
-    )
-
-    # Synthetic target generation with negative correlation to match WOE behaviors
-    raw_scores = (
-        -0.8 * mock_X["person_income"]
-        - 0.5 * mock_X["person_age"]
-        - 0.2 * mock_X["person_home_ownership"]
-        + np.random.normal(0, 0.5, 1000)
-    )
-    mock_y = pd.Series(np.where(raw_scores > 0, 1, 0))
-
-    # 3. Instantiate and trigger Method Chaining pipeline execution
-    trainer = CreditModelTrainer(model_config=MOCK_CONFIG).fit(mock_X, mock_y)
-
-    # 4. Generate validation inferences
-    classes = trainer.predict_class(mock_X)
-    probabilities = trainer.predict_probability(mock_X)
-
-    # ==============================================================================
-    # COMPREHENSIVE REGULATORY MODEL AUDIT LOGS
-    # ==============================================================================
-    print("\n==================================================")
-    print("[AUDIT] FINAL LOGISTIC REGRESSION COEFFICIENTS")
-    print("==================================================")
-    print(f"  - Base Intercept (Beta_0)   : {trainer.intercept_:.4f}")
-
-    # Financial Rule Validation: Since WOE is directly proportional to safety,
-    # all beta coefficients running into predictions must be NEGATIVE.
-    for feature, beta in trainer.coefficients_.items():
-        audit_status = (
-            "✅ VALID (Negative)"
-            if beta < 0
-            else "❌ CRITICAL ERROR (Positive Beta violates risk math)"
+        X_const = add_constant(
+            X[self.final_features_].astype(float), has_constant="add"
         )
-        print(
-            f"  - Coefficient (Beta) {feature:<22}: {beta:.4f} | Status: {audit_status}"
-        )
+        return np.asarray(self.model.predict(X_const), dtype=float)
 
-    print("\n==================================================")
-    print("[AUDIT] OUTPUT MATRICES SANITY CHECK")
-    print("==================================================")
-    print(f"  - First 5 Predicted Classes  : {classes[:5]}")
-    print(f"  - First 5 Probabilities (PD) : {[f'{p:.4f}' for p in probabilities[:5]]}")
-
-    print("\n==================================================")
-    print("[SUCCESS] Model Pipeline executed with full regulatory visibility.")
+    def predict_class(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
+        """Predicts binary hard labels based on a probability threshold."""
+        probs = self.predict_probability(X)
+        return (probs >= threshold).astype(int)

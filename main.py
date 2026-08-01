@@ -1,9 +1,10 @@
 """
 Main Execution Pipeline - Credit Risk Scorecard Project
 ------------------------------------------------------
-Orchestrates data loading, absolute split isolation, two-tier preprocessing
-safeguards, dynamic WOE transformation, dual-branch feature selection,
-champion model auto-selection, multi-population artifact packages, and cloud sync.
+Orchestrates data loading, stratified isolation, two-tier preprocessing
+safeguards, dynamic WOE transformation, tri-branch feature selection,
+champion model auto-selection (1-SE Rule via 10-Fold CV), multi-population
+artifact packages, and cloud sync.
 """
 
 from dotenv import load_dotenv
@@ -20,14 +21,21 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any
 from huggingface_hub import HfApi
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import brier_score_loss, log_loss
 
 # Import localized modules from the src factory
-from src.data_loader import load_raw_training_data, split_train_val_test
+from src.data_loader import load_raw_training_data, split_train_test
 from src.preprocessing import CreditDataCleaner, WOETransformer
 from src.feature_selection import CreditFeatureSelector
 from src.model import CreditModelTrainer
 from src.scorecard import CreditScorecardScaler
-from src.config import ARTIFACTS_DIR
+from src.config import (
+    ARTIFACTS_DIR,
+    CONFIG_YAML_PATH,
+    RAW_DATA_FILE,
+    PROCESSED_DATA_DIR,
+)
 from src.utils import (
     get_run_directory,
     save_roc_curve,
@@ -36,10 +44,15 @@ from src.utils import (
     save_woe_tables,
     save_probability_distribution,
     save_confusion_matrix_heatmap,
+    save_calibration_plot,
+    save_candidate_evaluation_charts,
     log_progress,
-    extract_structural_bins,
     evaluate_and_select_champion,
     calculate_calibration_error,
+    audit_scorecard_results,
+    calculate_optimal_cutoff,
+    generate_approval_table,
+    save_business_strategy_plots,
 )
 
 
@@ -103,8 +116,8 @@ def main() -> None:
     log_progress(
         1, TOTAL_STEPS, "Loading Configuration Registry (config.yaml)", start_time
     )
-    config_path: str = "config.yaml"
-    if not os.path.exists(config_path):
+    config_path: Path = CONFIG_YAML_PATH
+    if not config_path.exists():
         raise FileNotFoundError(
             f"[CRITICAL] Configuration file missing at: {config_path}"
         )
@@ -116,12 +129,19 @@ def main() -> None:
     CAT_COLS: List[str] = config["features"]["categorical"]
     TARGET_COL: str = config["target"]
 
+    # EXTRACT PREPROCESSING MODE (Crucial for Branching Logic)
+    PREP_MODE: str = config["data"].get("preprocessing_mode", "mlops_optimized")
+
     # --------------------------------------------------------------------------
     # STEP 2: RAW DATA ACQUISITION
     # --------------------------------------------------------------------------
-    log_progress(2, TOTAL_STEPS, "Acquiring Raw Data Registry from Disk", start_time)
-    data_path: str = os.path.join("data", "raw", config["data"]["raw_file_name"])
-    df_raw: pd.DataFrame = load_raw_training_data(file_path=data_path)
+    log_progress(
+        2, TOTAL_STEPS, f"Acquiring Raw Data Registry (Mode: {PREP_MODE})", start_time
+    )
+    data_path: Path = RAW_DATA_FILE
+
+    # Passing the mode allows the data loader to drop legacy anomalies BEFORE splitting if in notebook_match mode
+    df_raw: pd.DataFrame = load_raw_training_data(file_path=data_path, mode=PREP_MODE)
 
     # --------------------------------------------------------------------------
     # STEP 3: ANTI-LEAKAGE STRATIFIED PARTITIONING & TARGET ISOLATION
@@ -145,15 +165,13 @@ def main() -> None:
 
     split_params: Dict[str, Any] = config["data"]["split_params"]
 
-    df_train, df_val, df_test = split_train_val_test(
+    # Notebook 4 strategy: Strictly Train and Test (No Validation Set)
+    df_train, df_test = split_train_test(
         df=df_raw, target_column=TARGET_COL, split_params=split_params
     )
 
     X_train: pd.DataFrame = df_train.drop(columns=[TARGET_COL]).copy()
     y_train: pd.Series = df_train[TARGET_COL].copy()
-
-    X_val: pd.DataFrame = df_val.drop(columns=[TARGET_COL]).copy()
-    y_val: pd.Series = df_val[TARGET_COL].copy()
 
     X_test: pd.DataFrame = df_test.drop(columns=[TARGET_COL]).copy()
     y_test: pd.Series = df_test[TARGET_COL].copy()
@@ -161,11 +179,20 @@ def main() -> None:
     # --------------------------------------------------------------------------
     # STEP 4: TIER-1 CLEANING PIPELINE (STATISTICAL & BUSINESS CONSTRAINTS)
     # --------------------------------------------------------------------------
-    log_progress(4, TOTAL_STEPS, "Running Tier-1 Data Cleaner Pipeline", start_time)
+    log_progress(
+        4,
+        TOTAL_STEPS,
+        f"Running Tier-1 Data Cleaner Pipeline (Mode: {PREP_MODE})",
+        start_time,
+    )
+
+    # Passing PREP_MODE coordinates the cleaner to apply either legacy drop logic or Z-Score capping
     cleaner: CreditDataCleaner = CreditDataCleaner(
         numerical_features=NUM_COLS,
         categorical_features=CAT_COLS,
         cleaning_config=config.get("cleaning_config", {}),
+        validation_config=config.get("validation", {}),
+        mode=PREP_MODE,
     )
 
     global_mutation_log = []
@@ -192,28 +219,7 @@ def main() -> None:
     }
     y_train = y_train.loc[X_train_clean.index]
 
-    # --- 4.2 VALIDATION SET AUDIT ---
-    print("\n" + "-" * 70)
-    print("📊 [TIER-1 AUDIT] EVALUATING VALIDATION SET")
-    X_val_clean: pd.DataFrame = cleaner.transform(X_val)
-    cleaner._print_audit_log()
-
-    val_mutations = cleaner.audit_report_.get("mutation_details", [])
-    for mutation in val_mutations:
-        mutation["dataset_type"] = "validation"
-    global_mutation_log.extend(val_mutations)
-
-    cleaning_summaries["validation"] = {
-        "total_input_records": cleaner.audit_report_.get("total_input_records"),
-        "final_records": cleaner.audit_report_.get("final_records"),
-        "outliers_dropped_count": cleaner.audit_report_.get("outliers_dropped_count"),
-        "outliers_dropped_ratio": cleaner.audit_report_.get("outliers_dropped_ratio"),
-        "reason_codes_flagged": cleaner.audit_report_.get("reason_codes_flagged"),
-        "missing_values_imputed": cleaner.audit_report_.get("missing_values_imputed"),
-    }
-    y_val = y_val.loc[X_val_clean.index]
-
-    # --- 4.3 TESTING SET AUDIT ---
+    # --- 4.2 TESTING SET AUDIT ---
     print("\n" + "-" * 70)
     print("📊 [TIER-1 AUDIT] EVALUATING TESTING SET")
     X_test_clean: pd.DataFrame = cleaner.transform(X_test)
@@ -251,52 +257,63 @@ def main() -> None:
     )
 
     X_train_woe: pd.DataFrame = woe_transformer.fit_transform(X_train_clean, y_train)
-    X_val_woe: pd.DataFrame = woe_transformer.transform(X_val_clean)
     X_test_woe: pd.DataFrame = woe_transformer.transform(X_test_clean)
 
     # --------------------------------------------------------------------------
-    # STEP 6: TIER-3 DUAL-BRANCH FEATURE SELECTION
+    # STEP 6: TIER-3 TRI-BRANCH FEATURE SELECTION
     # --------------------------------------------------------------------------
     log_progress(
-        6, TOTAL_STEPS, "Running Tier-3 Dual-Branch Feature Selection", start_time
+        6, TOTAL_STEPS, "Running Tier-3 Tri-Branch Feature Selection", start_time
     )
 
     selection_config = config["features"].get("selection_config", {})
     feature_selector = CreditFeatureSelector(selection_config=selection_config)
 
+    # Returns a dict of DataFrames mapped to 3 Candidate Structures
     X_train_sel_dict: Dict[str, pd.DataFrame] = feature_selector.fit_transform(
         X_train_woe, y_train, woe_transformer.iv_scores
     )
-
-    X_val_sel_dict: Dict[str, pd.DataFrame] = feature_selector.transform(X_val_woe)
     X_test_sel_dict: Dict[str, pd.DataFrame] = feature_selector.transform(X_test_woe)
 
     # --------------------------------------------------------------------------
-    # STEP 7: DUAL MODEL TRAINING & CHAMPION AUTO-SELECTION
+    # STEP 7: 10-FOLD CV MODEL EVALUATION & CHAMPION AUTO-SELECTION
     # --------------------------------------------------------------------------
     log_progress(
-        7, TOTAL_STEPS, "Training Competitors & Selecting Champion Model", start_time
+        7, TOTAL_STEPS, "Evaluating Models via CV & Selecting Champion", start_time
     )
 
-    model_baseline = CreditModelTrainer(model_config=config["model"])
-    model_subset = CreditModelTrainer(model_config=config["model"])
+    cv_folds = split_params.get("cv_folds", 10)
+    random_state = split_params.get("random_state", 42)
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
-    model_baseline.fit(X_train_sel_dict["baseline"], y_train)
-    model_subset.fit(X_train_sel_dict["subset"], y_train)
+    # Pre-calculate identical splits to ensure fair comparison across all candidates
+    cv_splits = list(cv.split(X_train_clean, y_train))
+    candidate_results = {}
 
-    y_val_prob_base = model_baseline.predict_probability(X_val_sel_dict["baseline"])
-    y_val_prob_sub = model_subset.predict_probability(X_val_sel_dict["subset"])
-    y_val_true_arr = y_val.to_numpy()
+    for model_key, X_train_subset in X_train_sel_dict.items():
+        model_label = model_key.replace("_", " ").title()
+        trainer = CreditModelTrainer(model_config=config["model"])
 
+        # Execute rigorous 10-Fold evaluation and statistical audits
+        results = trainer.evaluate_cv(
+            X=X_train_subset,
+            y=y_train,
+            cv_splits=cv_splits,
+            model_key=model_key,
+            model_label=model_label,
+        )
+        candidate_results[model_key] = results
+
+    # Apply 1-SE rule to select Champion based on OOF AUC and Parsimony
     champ_cfg = selection_config.get("champion_selection", {})
-    champion_key, champion_model, metrics_log = evaluate_and_select_champion(
-        y_val_true=y_val_true_arr,
-        y_val_prob_base=y_val_prob_base,
-        y_val_prob_sub=y_val_prob_sub,
-        model_baseline=model_baseline,
-        model_subset=model_subset,
+    champion_key, metrics_log = evaluate_and_select_champion(
+        candidate_results=candidate_results,
         champ_cfg=champ_cfg,
     )
+
+    # Fit the Champion Model formally on the ENTIRE training subset to extract final coefficients
+    champion_model = CreditModelTrainer(model_config=config["model"])
+    champion_model.fit(X_train_sel_dict[champion_key], y_train)
 
     # --------------------------------------------------------------------------
     # STEP 8: MLOPS ARTIFACT STORAGE PACKAGING & MULTI-POPULATION EXPORT
@@ -311,24 +328,67 @@ def main() -> None:
     for sub_dir in ["plots", "metrics", "models", "data", "tables"]:
         (current_run_dir / sub_dir).mkdir(parents=True, exist_ok=True)
 
+    # --- VISUALIZATION: MODEL COMPARISON BAR CHARTS ---
+    save_candidate_evaluation_charts(
+        metrics_log=metrics_log,
+        folder_path=current_run_dir / "plots",
+    )
+
     # --- FINANCIAL SCORE SCALE CONVERSION ---
     print(f"[MLOPS] Activating Scorecard Scaling for Champion ({champion_key})...")
     score_scaler = CreditScorecardScaler(scaling_config=config["scorecard_scaling"])
     score_scaler.fit(model_trainer=champion_model, woe_transformer=woe_transformer)
 
-    X_train_bins = extract_structural_bins(X_train_clean, woe_transformer)
-    X_val_bins = extract_structural_bins(X_val_clean, woe_transformer)
-    X_test_bins = extract_structural_bins(X_test_clean, woe_transformer)
+    # Extract nominal bin strings for historical records matching the scaling logic
+    X_train_bins = woe_transformer.transform_to_bins(X_train_clean)
+    X_test_bins = woe_transformer.transform_to_bins(X_test_clean)
 
     train_scores: pd.Series = score_scaler.transform(X_train_bins)
-    val_scores: pd.Series = score_scaler.transform(X_val_bins)
     test_scores: pd.Series = score_scaler.transform(X_test_bins)
 
+    # Generate exact probabilities from the FINAL fitted champion model
+    X_train_champ = X_train_sel_dict[champion_key]
+    X_test_champ = X_test_sel_dict[champion_key]
+    y_train_prob_champ = champion_model.predict_probability(X_train_champ)
+    y_test_prob_champ = champion_model.predict_probability(X_test_champ)
+    y_oof_prob_champ = metrics_log[champion_key]["oof_probability"]
+
+    # --- BUSINESS DECISION STRATEGY & OPTIMAL CUT-OFF (STEPS 17-20) ---
+    print(
+        "\n[MLOPS] Activating Business Decision Strategy & Optimal Cut-off Analysis..."
+    )
+
+    # 1. Calculate Youden Index from OOF Train probabilities to prevent leakage
+    optimal_cutoff_metrics = calculate_optimal_cutoff(
+        y_true=y_train, y_prob=y_oof_prob_champ
+    )
+    optimal_pd = optimal_cutoff_metrics["optimal_pd_threshold"]
+
+    # 2. Convert Optimal PD to Optimal Credit Score Cut-off
+    scaling_cfg = config["scorecard_scaling"]
+    factor = scaling_cfg["pdo"] / np.log(2)
+    offset = scaling_cfg["base_score"] - factor * np.log(scaling_cfg["base_odds"])
+    optimal_score = offset - factor * np.log(optimal_pd / (1.0 - optimal_pd))
+
+    print(f"  -> Optimal PD Cut-off   : {optimal_pd:.4f}")
+    print(f"  -> Optimal Score Cut-off: {optimal_score:.1f}")
+
+    # 3. Generate Approval Strategy Table & Plots on Test Data
+    approval_table = generate_approval_table(
+        y_true=y_test, y_prob=y_test_prob_champ, scores=test_scores
+    )
+    save_business_strategy_plots(
+        approval_table=approval_table, folder_path=current_run_dir / "plots"
+    )
+    approval_table.to_csv(
+        current_run_dir / "tables" / "cumulative_approval_strategy.csv", index=False
+    )
+
     # --- FINANCIAL CALIBRATION AUDIT ---
-    y_val_prob_champ = y_val_prob_base if champion_key == "baseline" else y_val_prob_sub
+    # Compare final model's probabilities against final model's exact scorecard points
     calibration_metrics = calculate_calibration_error(
-        y_prob=y_val_prob_champ,
-        actual_scores=val_scores,
+        y_prob=y_train_prob_champ,
+        actual_scores=train_scores,
         scaling_config=config["scorecard_scaling"],
     )
 
@@ -339,30 +399,49 @@ def main() -> None:
     ) as f:
         json.dump(calibration_metrics, f, indent=4)
 
-    # --- PHYSICAL DATASETS EXPORTATION ---
-    print("[MLOPS] Saving processed row-level datasets to storage records...")
+    # --- PHYSICAL DATASETS EXPORTATION & AUDIT (STEPS 17 & 18) ---
+    print("[MLOPS] Saving processed row-level datasets and computing odds...")
+
+    # Calculate Good:Bad Odds: Odds = (1 - PD) / PD
+    train_odds = (1.0 - y_train_prob_champ) / np.clip(y_train_prob_champ, 1e-10, 1.0)
+    test_odds = (1.0 - y_test_prob_champ) / np.clip(y_test_prob_champ, 1e-10, 1.0)
 
     train_historical = X_train_sel_dict[champion_key].copy()
+    train_historical["predicted_pd"] = y_train_prob_champ
+    train_historical["good_bad_odds"] = train_odds
     train_historical["credit_score"] = train_scores
     train_historical[TARGET_COL] = y_train
 
-    val_historical = X_val_sel_dict[champion_key].copy()
-    val_historical["credit_score"] = val_scores
-    val_historical[TARGET_COL] = y_val
-
     test_historical = X_test_sel_dict[champion_key].copy()
+    test_historical["predicted_pd"] = y_test_prob_champ
+    test_historical["good_bad_odds"] = test_odds
     test_historical["credit_score"] = test_scores
     test_historical[TARGET_COL] = y_test
 
-    train_historical.to_csv(
-        current_run_dir / "data" / f"train_woe_{champion_key}.csv", index=False
+    # Execute Scorecard Audit (Correlation & Score Bands)
+    audit_scorecard_results(
+        test_scores=test_scores, y_test_prob=y_test_prob_champ, y_test_true=y_test
     )
-    val_historical.to_csv(
-        current_run_dir / "data" / f"val_woe_{champion_key}.csv", index=False
+
+    # Save to disk (Scored Historical)
+    train_historical.to_csv(
+        current_run_dir / "data" / f"train_scored_{champion_key}.csv", index=False
     )
     test_historical.to_csv(
-        current_run_dir / "data" / f"test_woe_{champion_key}.csv", index=False
+        current_run_dir / "data" / f"test_scored_{champion_key}.csv", index=False
     )
+
+    print("[MLOPS] Exporting Raw Train/Test Splits for Engineering Audits...")
+
+    # 1. Saving in MLOps Run for tracking version
+    df_train.to_csv(current_run_dir / "data" / "train_raw_split.csv", index=False)
+    df_test.to_csv(current_run_dir / "data" / "test_raw_split.csv", index=False)
+
+    # 2. Saving in 'data/processed'
+    processed_dir: Path = PROCESSED_DATA_DIR
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    df_train.to_csv(processed_dir / "train_raw_split.csv", index=False)
+    df_test.to_csv(processed_dir / "test_raw_split.csv", index=False)
 
     # --- AUDIT LOGS EXPORT ---
     print("[MLOPS] Saving Validation & Quality Audit Logs...")
@@ -390,12 +469,26 @@ def main() -> None:
             current_run_dir / "tables" / "woe_diagnostics_warnings.csv", index=False
         )
 
+    # Export Cross-Validation evaluation grid for all candidate models
     with open(
-        current_run_dir / "metrics" / "champion_vs_challenger_comparison.json",
+        current_run_dir / "metrics" / "cross_validation_results_grid.json",
         "w",
         encoding="utf-8",
     ) as f:
-        json.dump(metrics_log, f, indent=4)
+        # Convert DataFrames to dicts for JSON serialization
+        json_ready_log = {}
+        for k, v in metrics_log.items():
+            if k in ["champion", "one_se_threshold"]:
+                json_ready_log[k] = v
+            else:
+                json_ready_log[k] = {
+                    "summary": v["summary"],
+                    "coefficient_stability": v["coefficient_stability"].to_dict(
+                        orient="records"
+                    ),
+                    "fold_metrics": v["fold_metrics"].to_dict(orient="records"),
+                }
+        json.dump(json_ready_log, f, indent=4)
 
     with open(
         current_run_dir / "metrics" / "feature_selection_audit.json",
@@ -403,6 +496,14 @@ def main() -> None:
         encoding="utf-8",
     ) as f:
         json.dump(feature_selector.audit_report_, f, indent=4)
+
+    # Export Champion Model Mathematical Audit (Coefficients, P-values, Confidence Intervals)
+    with open(
+        current_run_dir / "metrics" / "champion_model_math_audit.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(champion_model.audit_report_, f, indent=4)
 
     save_iv_scores(
         woe_transformer.iv_scores,
@@ -414,65 +515,51 @@ def main() -> None:
     score_scaler.plot_monotonic_barcharts(folder_path=current_run_dir / "plots")
 
     # --- POPULATION EVALUATIONS ---
-    X_train_champ = X_train_sel_dict[champion_key]
-    X_val_champ = X_val_sel_dict[champion_key]
-    X_test_champ = X_test_sel_dict[champion_key]
+    # IMPORTANT: Predict classes using the OPTIMAL PD Cut-off instead of default 0.5
+    y_train_pred_optimal = (y_oof_prob_champ >= optimal_pd).astype(int)
+    y_test_pred_optimal = (y_test_prob_champ >= optimal_pd).astype(int)
 
-    y_train_pred: np.ndarray = champion_model.predict_class(X_train_champ)
-    y_train_prob: np.ndarray = champion_model.predict_probability(X_train_champ)
     save_classification_report(
         y_true=y_train,
-        y_pred=y_train_pred,
-        y_prob=y_train_prob,
+        y_pred=y_train_pred_optimal,
+        y_prob=y_oof_prob_champ,
         file_path=current_run_dir / "metrics" / "train_evaluation_report.json",
     )
 
-    y_val_pred: np.ndarray = champion_model.predict_class(X_val_champ)
-    y_val_prob: np.ndarray = champion_model.predict_probability(X_val_champ)
-    save_classification_report(
-        y_true=y_val,
-        y_pred=y_val_pred,
-        y_prob=y_val_prob,
-        file_path=current_run_dir / "metrics" / "validation_evaluation_report.json",
-    )
-    save_roc_curve(
-        y_true=y_val,
-        y_prob=y_val_prob,
-        file_path=current_run_dir / "plots" / "validation_roc_curve.png",
-    )
-    save_probability_distribution(
-        y_true=y_val,
-        y_prob=y_val_prob,
-        file_path=current_run_dir / "plots" / "validation_probability_distribution.png",
-    )
-    save_confusion_matrix_heatmap(
-        y_true=y_val,
-        y_pred=y_val_pred,
-        file_path=current_run_dir / "plots" / "validation_confusion_matrix_heatmap.png",
-    )
-
-    y_test_pred: np.ndarray = champion_model.predict_class(X_test_champ)
-    y_test_prob: np.ndarray = champion_model.predict_probability(X_test_champ)
     save_classification_report(
         y_true=y_test,
-        y_pred=y_test_pred,
-        y_prob=y_test_prob,
+        y_pred=y_test_pred_optimal,
+        y_prob=y_test_prob_champ,
         file_path=current_run_dir / "metrics" / "test_evaluation_report.json",
     )
+
+    # Generate ROC Curve with the identified Optimal Score Cut-off
     save_roc_curve(
         y_true=y_test,
-        y_prob=y_test_prob,
+        y_prob=y_test_prob_champ,
         file_path=current_run_dir / "plots" / "test_roc_curve.png",
+        optimal_pd=optimal_pd,
+        optimal_score=optimal_score,
+        optimal_sensitivity=optimal_cutoff_metrics["sensitivity"],
+        optimal_specificity=optimal_cutoff_metrics["specificity"],
+        title_suffix="with Locked OOF Cut-off",
     )
+
     save_probability_distribution(
         y_true=y_test,
-        y_prob=y_test_prob,
+        y_prob=y_test_prob_champ,
         file_path=current_run_dir / "plots" / "test_probability_distribution.png",
     )
     save_confusion_matrix_heatmap(
         y_true=y_test,
-        y_pred=y_test_pred,
+        y_pred=y_test_pred_optimal,
         file_path=current_run_dir / "plots" / "test_confusion_matrix_heatmap.png",
+    )
+
+    save_calibration_plot(
+        y_true=y_test,
+        y_prob=y_test_prob_champ,
+        file_path=current_run_dir / "plots" / "test_calibration_curve.png",
     )
 
     # --- MODEL BINARY LOCK ---
@@ -494,31 +581,46 @@ def main() -> None:
     # FINAL EXECUTIVE PERFORMANCE AUDIT SUMMARIES
     # ==============================================================================
     print("\n======================================================================")
-    print(
-        f"📊 TRIPLE-POPULATION METRICS COMPLIANCE GRID (CHAMPION: {champion_key.upper()})"
-    )
+    print(f"📊 METRICS COMPLIANCE GRID (CHAMPION: {champion_key.upper()})")
     print("======================================================================")
     with open(
         current_run_dir / "metrics" / "train_evaluation_report.json", "r"
     ) as trf, open(
-        current_run_dir / "metrics" / "validation_evaluation_report.json", "r"
-    ) as vf, open(
         current_run_dir / "metrics" / "test_evaluation_report.json", "r"
     ) as tf:
         tr_scores = json.load(trf)["scores"]
-        v_scores = json.load(vf)["scores"]
         t_scores = json.load(tf)["scores"]
 
-    print(f"  Metric Profile      | Train Dataset | Validation Set | Testing Dataset")
-    print(f"  --------------------|---------------|----------------|----------------")
+    train_brier = metrics_log[champion_key]["summary"]["OOF Brier"]
+    test_brier = brier_score_loss(y_test, y_test_prob_champ)
+    train_logloss = metrics_log[champion_key]["summary"]["OOF Log loss"]
+    test_logloss = log_loss(y_test, y_test_prob_champ)
+
+    print(f"  Metric Profile      | Train (OOF)   | Testing Dataset")
+    print(f"  --------------------|---------------|----------------")
     print(
-        f"  Kolmogorov-Smirnov  | {tr_scores['kolmogorov_smirnov_ks']:>13.4f} | {v_scores['kolmogorov_smirnov_ks']:>14.4f} | {t_scores['kolmogorov_smirnov_ks']:>15.4f}"
+        f"  ROC-AUC             | {tr_scores['roc_auc']:>13.4f} | {t_scores['roc_auc']:>15.4f}"
     )
     print(
-        f"  F1-Classification   | {tr_scores['f1_score']:>13.4f} | {v_scores['f1_score']:>14.4f} | {t_scores['f1_score']:>15.4f}"
+        f"  Gini Index          | {tr_scores['gini_index']:>13.4f} | {t_scores['gini_index']:>15.4f}"
     )
     print(
-        f"  Overall Accuracy    | {tr_scores['accuracy']:>13.4f} | {v_scores['accuracy']:>14.4f} | {t_scores['accuracy']:>15.4f}"
+        f"  Kolmogorov-Smirnov  | {tr_scores['kolmogorov_smirnov_ks']:>13.4f} | {t_scores['kolmogorov_smirnov_ks']:>15.4f}"
+    )
+    print(f"  Brier Score         | {train_brier:>13.4f} | {test_brier:>15.4f}")
+    print(f"  Log Loss            | {train_logloss:>13.4f} | {test_logloss:>15.4f}")
+    print(f"  --------------------|---------------|----------------")
+    print(
+        f"  Precision           | {tr_scores['precision']:>13.4f} | {t_scores['precision']:>15.4f}"
+    )
+    print(
+        f"  Recall (Sensitivity)| {tr_scores['recall_sensitivity']:>13.4f} | {t_scores['recall_sensitivity']:>15.4f}"
+    )
+    print(
+        f"  F1-Classification   | {tr_scores['f1_score']:>13.4f} | {t_scores['f1_score']:>15.4f}"
+    )
+    print(
+        f"  Overall Accuracy    | {tr_scores['accuracy']:>13.4f} | {t_scores['accuracy']:>15.4f}"
     )
 
     print("\n======================================================================")
@@ -526,19 +628,28 @@ def main() -> None:
     print("======================================================================")
     print(f"Base Intercept (Beta_0) : {champion_model.intercept_:.4f}")
 
-    all_betas_valid: bool = True
-    for feature, beta in champion_model.coefficients_.items():
-        is_valid = beta < 0
-        status_icon = "✅ VALID" if is_valid else "❌ CRITICAL ERROR"
-        if not is_valid:
-            all_betas_valid = False
-        print(f"  - {feature:<22} | Beta: {beta:.4f} ({status_icon})")
+    coef_stats = champion_model.audit_report_.get("coefficient_statistics", [])
+    all_passed = True
+    for stat in coef_stats:
+        if stat["Variable"] == "const":
+            continue
+        status = stat["Expected WOE sign"]
+        icon = "✅ PASS" if status == "Pass" else "⚠️ REVIEW"
+        if status != "Pass":
+            all_passed = False
+        print(
+            f"  - {stat['Variable']:<25} | Beta: {stat['Coefficient']:.4f} | P-value: {stat['P-value']:.4f} ({icon})"
+        )
 
     print("-" * 70)
-    if all_betas_valid:
-        print("🛡️ RISK STATUS: PASSED. Model complies with credit risk mathematics.")
+    if all_passed:
+        print(
+            "🛡️ RISK STATUS: PASSED. All features conform to expected economic logic (Negative Betas)."
+        )
     else:
-        print("🚨 RISK STATUS: FAILED. Review positive features for trend reversal.")
+        print(
+            "🚨 RISK STATUS: WARNING. Some features have positive betas and require underwriter review."
+        )
     print("======================================================================")
 
     # --- FINANCIAL CALIBRATION AUDIT SUMMARY ---
