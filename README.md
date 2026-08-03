@@ -89,7 +89,7 @@ flowchart TD
     B --> TrainSet[Training Set 80%]
     B --> TestSet[Testing Set 20%]
 
-    TrainSet --> C[Step 4: Tier-1 Statistical Cleaner<br>Outlier Capping / Notebook Bypass]
+    TrainSet --> C[Step 4: Tier-1 Statistical Cleaner<br>Outlier Capping / Dropping]
     C --> D[Step 5: Tier-2 Dynamic<br>WOE Binning & Encoding]
 
     D --> E[Step 6: Tier-3 Tri-Branch<br>Feature Selection]
