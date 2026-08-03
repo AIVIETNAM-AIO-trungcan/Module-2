@@ -5,8 +5,8 @@ This module acts as the user interface layer for the Credit Scorecard System.
 Refactored to meet banking UI/UX compliance standards, streamline batch processing,
 enforce internal underwriter security controls, maintain session state persistence,
 dynamically fetch decision thresholds, and ensure Notebook Sync Verification.
-Includes an Interactive Decision Simulator with Heatmap formatting and
-dynamic Chart visualization for the Scorecard Rulebook.
+Includes an Interactive Decision Simulator with Heatmap formatting,
+dynamic Chart visualization for the Scorecard Rulebook, and categorized input forms.
 """
 
 from io import StringIO
@@ -252,8 +252,6 @@ with tab_single:
     st.markdown("<br>", unsafe_allow_html=True)
 
     with st.form("single_scoring_form"):
-        # Rebalanced columns after removing post-decision features (loan_grade, loan_int_rate)
-        col1, col2, col3 = st.columns(3)
 
         default_income: int = 25000000 if currency_unit == "VND" else 1000
         default_loan: int = 50000000 if currency_unit == "VND" else 2000
@@ -266,9 +264,35 @@ with tab_single:
             else t["income_freq_yearly"]
         )
 
-        with col1:
+        # --- Section 1: Applicant Demographics & History ---
+        sec1_title = (
+            "👤 Thông tin Khách hàng" if lang == "vi" else "👤 Applicant Information"
+        )
+        st.markdown(f"**{sec1_title}**")
+
+        col_a1, col_a2, col_a3 = st.columns(3)
+        with col_a1:
             person_age: int = st.number_input(
                 t["person_age"], min_value=18, max_value=100, value=30
+            )
+
+            person_emp_length: float = st.number_input(
+                t["person_emp_length"],
+                min_value=0.0,
+                max_value=60.0,
+                value=3.0,
+                step=0.5,
+            )
+
+        with col_a2:
+            income_input: float = st.number_input(
+                f"{t['income_label']} ({freq_label} - {currency_unit})",
+                min_value=0.0,
+                value=float(default_income),
+                step=float(step_income),
+            )
+            st.caption(
+                f"👉 **{format_money(income_input, currency_unit)} / {freq_label.lower()}**"
             )
 
             home_opts: List[str] = list(
@@ -282,34 +306,9 @@ with tab_single:
                 ][x][lang],
             )
 
-            person_emp_length: float = st.number_input(
-                t["person_emp_length"],
-                min_value=0.0,
-                max_value=60.0,
-                value=3.0,
-                step=0.5,
-            )
-
-        with col2:
-            income_input: float = st.number_input(
-                f"{t['income_label']} ({freq_label} - {currency_unit})",
-                min_value=0.0,
-                value=float(default_income),
-                step=float(step_income),
-            )
-            st.caption(
-                f"👉 **{format_money(income_input, currency_unit)} / {freq_label.lower()}**"
-            )
-
-            intent_opts: List[str] = list(
-                ui_cfg["categorical_options"]["loan_intent"].keys()
-            )
-            loan_intent: str = st.selectbox(
-                t["loan_intent"],
-                options=intent_opts,
-                format_func=lambda x: ui_cfg["categorical_options"]["loan_intent"][x][
-                    lang
-                ],
+        with col_a3:
+            cb_person_cred_hist_length: int = st.number_input(
+                t["cb_person_cred_hist_length"], min_value=0, max_value=50, value=5
             )
 
             cb_default_opts: List[str] = list(
@@ -323,7 +322,14 @@ with tab_single:
                 ][x][lang],
             )
 
-        with col3:
+        st.markdown("<hr style='margin: 15px 0 20px 0;'>", unsafe_allow_html=True)
+
+        # --- Section 2: Loan Information ---
+        sec2_title = "💰 Thông tin Khoản vay" if lang == "vi" else "💰 Loan Information"
+        st.markdown(f"**{sec2_title}**")
+
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
             loan_amt_input: float = st.number_input(
                 f"{t['loan_amount_label']} ({currency_unit})",
                 min_value=0.0,
@@ -332,10 +338,19 @@ with tab_single:
             )
             st.caption(f"👉 **{format_money(loan_amt_input, currency_unit)}**")
 
-            cb_person_cred_hist_length: int = st.number_input(
-                t["cb_person_cred_hist_length"], min_value=0, max_value=50, value=5
+        with col_l2:
+            intent_opts: List[str] = list(
+                ui_cfg["categorical_options"]["loan_intent"].keys()
+            )
+            loan_intent: str = st.selectbox(
+                t["loan_intent"],
+                options=intent_opts,
+                format_func=lambda x: ui_cfg["categorical_options"]["loan_intent"][x][
+                    lang
+                ],
             )
 
+        st.markdown("<br>", unsafe_allow_html=True)
         submit_btn: bool = st.form_submit_button(
             t["btn_predict"], type="primary", use_container_width=True
         )

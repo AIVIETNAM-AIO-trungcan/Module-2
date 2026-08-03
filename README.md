@@ -15,10 +15,10 @@ The **Credit Risk Scoring and Decision Support System** is a comprehensive, prod
 
 Built on strict credit risk principles (WOE Encoding, Logistic Regression Scaling, PDO Calibration), the system generates highly interpretable Business Scorecards while adhering to rigorous regulatory compliance standards:
 
-- **Strict Anti-Data Leakage Architecture:** Enforces early 3-way Stratified Partitioning (Train / Validation / Test) prior to any data cleaner fitting or WOE binning.
-- **Banking-Grade Outlier Mitigation:** Applies Winsorization (Capping) to preserve 100% of applicant records while maintaining dedicated binning categories for missing/NaN values.
-- **Dual-Branch Feature Selection:** Compares a Baseline VIF + IV screening branch against a Challenger LASSO 10-Fold Cross-Validation (1-SE Rule) feature subset.
-- **Financial Calibration & Regulatory Compliance:** Achieves a Mean Absolute Error (MAE) of $\approx 0.39$ score points, near-perfect calibration variance ($1.0017 \approx 1.0$), and enforces strictly negative risk coefficients ($\beta < 0$).
+- **Strict Anti-Data Leakage Architecture:** Enforces early 2-way Stratified Partitioning (80% Train / 20% Test) prior to any data cleaner fitting or WOE binning.
+- **Dual-Mode Data Preprocessing (Notebook Sync Validation):** Features a production-ready _MLOps Mode_ (Winsorization/Capping to preserve 100% records) alongside a strict _Notebook Sync Mode_. Because the legacy Jupyter notebook manually hard-drops anomalies (e.g., missing employment lengths, extreme ages > 100) before splitting, this pipeline explicitly intercepts and mirrors these drops to ensure 100% mathematical verification and exact replication of the legacy baselines.
+- **Tri-Branch Feature Selection:** Compares an IV-screened baseline against Pre-decision financial and explainable subsets using rigorous 10-Fold Cross-Validation (1-SE Rule).
+- **Financial Calibration & Regulatory Compliance:** Achieves a Mean Absolute Error (MAE) of $\approx 0.62$ score points, near-perfect calibration variance ($1.0102 \approx 1.0$), and enforces strictly negative risk coefficients ($\beta < 0$).
 - **MLOps Cloud Auto-Sync:** Packages production binaries into `model.zip` upon training completion and automatically syncs them with Hugging Face Hub for instant Streamlit Cloud deployment.
 - **Role-Based Security Control:** Integrates an Underwriter Security Gate (`admin123` passcode) to hide sensitive score attribution charts and proprietary scaling tables from public applicant views.
 
@@ -34,7 +34,7 @@ Built on strict credit risk principles (WOE Encoding, Logistic Regression Scalin
 | No. | Member Name          | Role & Core Responsibilities                                                                                                                                        | GitHub Profile                                                           |
 | :-: | :------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :----------------------------------------------------------------------- |
 |  1  | **Trần Phương Bình** | **Tech Leader**<br>• System architecture oversight & technical compliance<br>• Risk modeling audit & project roadmap execution                                      | [@AIVIETNAM-AIO-TPBINH](https://github.com/AIVIETNAM-AIO-TPBINH)         |
-|  2  | **Đào Trung Cần**    | **AI Engineer (Pipeline)**<br>• Master pipeline engineering (`main.py`, `src/`)<br>• Scorecard scaling, PDO calibration & Hugging Face MLOps auto-sync              | [@AIVIETNAM-AIO-trungcan](https://github.com/AIVIETNAM-AIO-trungcan)     |
+|  2  | **Đào Trung Can**    | **AI Engineer (Pipeline)**<br>• Master pipeline engineering (`main.py`, `src/`)<br>• Scorecard scaling, PDO calibration & Hugging Face MLOps auto-sync              | [@AIVIETNAM-AIO-trungcan](https://github.com/AIVIETNAM-AIO-trungcan)     |
 |  3  | **Cao Bá Hoàng**     | **AI Engineer (Model)**<br>• Model selection, hyperparameter tuning & LASSO CV optimization<br>• Regulatory beta audits & risk coefficient verification             | [@AIVIETNAM-AIO-CaoBaHoang](https://github.com/AIVIETNAM-AIO-CaoBaHoang) |
 |  4  | **Nguyễn Tùng**      | **AI Engineer (Data)**<br>• Tier-1 Data Cleaner, outlier capping & Tier-2 WOE Binning engine<br>• Data leakage prevention & feature information value (IV) analysis | [@AIVIETNAM-AIO-Jayn79](https://github.com/AIVIETNAM-AIO-Jayn79)         |
 |  5  | **Vũ Khánh Vy**      | **QA / Reviewer**<br>• Underwriting security testing & Streamlit UI quality assurance<br>• Documentation audit & business scorecard rulebook validation             | [@Whoami-404-pip](https://github.com/Whoami-404-pip)                     |
@@ -47,7 +47,7 @@ Built on strict credit risk principles (WOE Encoding, Logistic Regression Scalin
 Module-2/
 ├── .vscode/                         # IDE workspace configurations
 ├── artifacts/                       # MLOps isolated run storage
-│   └── runs/                        # Dynamic execution run logs (e.g., 2026-07-30_run_11)
+│   └── runs/                        # Dynamic execution run logs (e.g., 2026-08-03_run_8)
 │       ├── data/                    # Processed WOE datasets and score-transformed tables
 │       ├── metrics/                 # JSON reports of model performance (KS, Gini, MAE)
 │       ├── models/                  # Serialized binary model packages (.pkl files)
@@ -61,13 +61,13 @@ Module-2/
 ├── src/                             # Core Library Modules
 │   ├── __init__.py                  # Python package initializer
 │   ├── config.py                    # System path constants & configurations
-│   ├── data_loader.py               # Raw data loader & Stratified Train/Val/Test partitioning
-│   ├── feature_selection.py         # Tier-3 Dual-Branch Feature Selector (VIF, IV, LASSO)
+│   ├── data_loader.py               # Raw data loader & Stratified Train/Test partitioning
+│   ├── feature_selection.py         # Tier-3 Tri-Branch Feature Selector
 │   ├── inference.py                 # Production Inference Engine with Auto-Cloud Recovery
 │   ├── model.py                     # Logistic Regression Model Trainer & Regulatory Beta Audits
-│   ├── preprocessing.py             # Tier-1 Statistical Cleaner (Capping) & Tier-2 WOE Engine
+│   ├── preprocessing.py             # Tier-1 Statistical Cleaner & Tier-2 WOE Engine
 │   ├── scorecard.py                 # Financial Score Scaling (Base Score, PDO, Factor/Offset)
-│   └── utils.py                     # Performance Evaluation, ROC/KS Plots & Audit Export Helpers
+│   └── utils.py                     # Performance Evaluation, ROC Plots & Strategy Simulation
 ├── .env                             # Environment secrets file (HF_TOKEN) - Excluded via .gitignore
 ├── .gitignore                       # Git rules ignoring binaries, cache files, and zip packages
 ├── app.py                           # Application UI Entrypoint (Streamlit Interactive Web App)
@@ -86,21 +86,22 @@ The end-to-end workflow from raw data ingestion to automated cloud deployment:.
 ```mermaid
 flowchart TD
     A[Raw Credit Applicant Data] --> B[Step 1-3: Data Ingestion &<br>Stratified Split Isolation]
-    B --> TrainSet[Training Set 64%]
-    B --> ValSet[Validation Set 16%]
+    B --> TrainSet[Training Set 80%]
     B --> TestSet[Testing Set 20%]
 
-    TrainSet --> C[Step 4: Tier-1 Statistical Cleaner<br>Outlier Capping]
+    TrainSet --> C[Step 4: Tier-1 Statistical Cleaner<br>Outlier Capping / Notebook Bypass]
     C --> D[Step 5: Tier-2 Dynamic<br>WOE Binning & Encoding]
 
-    D --> E[Step 6: Tier-3 Dual-Branch<br>Feature Selection]
-    E --> F1[Baseline Branch:<br>VIF & IV Filtering]
-    E --> F2[Challenger Branch:<br>LASSO 10-Fold CV]
+    D --> E[Step 6: Tier-3 Tri-Branch<br>Feature Selection]
+    E --> F1[Candidate 1:<br>IV-Screened Full]
+    E --> F2[Candidate 2:<br>Intermediate Pre-Decision]
+    E --> F3[Candidate 3:<br>Explainable Pre-Decision]
 
-    F1 --> G[Step 7: Dual Model Training &<br>Regulatory Beta Verification]
+    F1 --> G[Step 7: 10-Fold CV Model Evaluation &<br>Regulatory Beta Verification]
     F2 --> G
+    F3 --> G
 
-    G --> H[Champion Model Auto-Selection<br>via Validation KS/Gini Metrics]
+    G --> H[Champion Model Auto-Selection<br>via 1-SE Rule]
 
     H --> I[Step 8: Scorecard Scaling &<br>Financial PDO Calibration Audit]
     I --> J[MLOps Artifact Packaging<br>model.zip Creation]
@@ -115,16 +116,16 @@ flowchart TD
 
 ## 📊 5. Technical Performance & Audit Metrics
 
-The selected Champion Model (`SUBSET`) exhibits excellent discrimination capability without signs of overfitting across all populations:
+The selected Champion Model (`Intermediate Pre-decision Full Financial`) exhibits excellent discrimination capability without signs of overfitting across all populations:
 
 | Metric Category             | Performance Indicator                                                                   | Benchmark / Target                  | Audit Status  |
 | :-------------------------- | :-------------------------------------------------------------------------------------- | :---------------------------------- | :-----------: |
-| **Model Discrimination**    | **KS Index:** `0.6407` (Test Set)<br>**Gini Coefficient:** `0.7550`                     | KS > 0.40<br>Gini > 0.60            | 🟢 Excellent  |
-| **Classification Accuracy** | **Overall Accuracy:** `87.68%`                                                          | Accuracy > 80%                      |  🟢 Optimal   |
-| **Score Calibration**       | **Mean Absolute Error (MAE):** `0.3922` pts<br>**Calibration Variance Ratio:** `1.0017` | MAE < 1.0 pt<br>Ratio $\approx 1.0$ | 🟢 Calibrated |
+| **Model Discrimination**    | **KS Index:** `0.5011` (Test Set)<br>**Gini Coefficient:** `0.6639`                     | KS > 0.40<br>Gini > 0.60            | 🟢 Excellent  |
+| **Classification Accuracy** | **Overall Accuracy:** `79.12%`                                                          | Accuracy > 75%                      |  🟢 Optimal   |
+| **Score Calibration**       | **Mean Absolute Error (MAE):** `0.6160` pts<br>**Calibration Variance Ratio:** `1.0102` | MAE < 1.0 pt<br>Ratio $\approx 1.0$ | 🟢 Calibrated |
 | **Regulatory Trend Audit**  | **Economic Logic:** $100\%$ negative coefficients ($\beta < 0$)                         | Monotonic Trend                     | 🟢 Compliant  |
 
-> > 📄 **Full Technical Documentation:** [Download Full Technical Audit Report (.PDF)](asset/Tech_Report.pdf)
+> > 📄 **Full Technical Documentation:** [Download Full Technical Audit Report (.PDF)](https://drive.google.com/file/d/1hcO1-CbHj6eSLq2Ao-x_QFpZB9LTFz5z/view?usp=sharing)
 
 ---
 
