@@ -5,15 +5,18 @@ Purpose:
     This module provides shared helper functions for logging, execution timing,
     MLOps run lineage tracking, exporting performance artifacts to disk,
     computing financial calibration metrics, auditing scorecard monotonicity,
-    and generating business strategy (Decisioning) artifacts.
+    generating business strategy (Decisioning) artifacts, and cloud syncing.
 
 Usages:
     Import helper functions directly into other scripts (e.g., 'from src.utils import get_timestamp').
 """
 
+import os
 import json
 import time
+import zipfile
 import pathlib
+import warnings
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -26,6 +29,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+from huggingface_hub import HfApi
 from typing import Dict, Any, Tuple
 
 
@@ -167,7 +171,6 @@ def save_roc_curve(
         label="Random classifier",
     )
 
-    # Pinpoint Optimal Cut-off on the curve if parameters are supplied
     if optimal_pd is not None:
         idx = np.argmin(np.abs(thresholds - optimal_pd))
         ax.plot(
@@ -338,8 +341,8 @@ def save_confusion_matrix_heatmap(
 
 def save_calibration_plot(
     y_true: Any, y_prob: Any, file_path: pathlib.Path, n_bins: int = 10
-) -> None:
-    """Plots Calibration Curve (Reliability Diagram)."""
+) -> pd.DataFrame:
+    """Plots Calibration Curve and prints Calibration Table to console."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     df = pd.DataFrame(
@@ -353,12 +356,28 @@ def save_calibration_plot(
     calib_table = (
         df.groupby("PD_band", observed=True)
         .agg(
+            Number_of_observations=("Actual", "size"),
             Mean_predicted_PD=("Predicted_PD", "mean"),
             Actual_bad_rate=("Actual", "mean"),
         )
         .reset_index()
     )
 
+    # --- NOTEBOOK SYNC VERIFICATION ---
+    print("\n" + "=" * 70)
+    print("📊 CALIBRATION TABLE (TEST DATASET)")
+    print("=" * 70)
+    formatted_table = calib_table.copy()
+    formatted_table["Mean_predicted_PD"] = formatted_table["Mean_predicted_PD"].apply(
+        lambda x: f"{x:.2%}"
+    )
+    formatted_table["Actual_bad_rate"] = formatted_table["Actual_bad_rate"].apply(
+        lambda x: f"{x:.2%}"
+    )
+    print(formatted_table.to_string(index=False))
+    print("=" * 70 + "\n")
+
+    # Plot logic
     fig, ax = plt.subplots(figsize=(7, 6))
     ax.plot(
         calib_table["Mean_predicted_PD"],
@@ -367,7 +386,7 @@ def save_calibration_plot(
         markersize=6,
         color="#1f77b4",
         lw=2,
-        label="Observed",
+        label="Observed by PD band",
     )
     ax.plot(
         [0, 1],
@@ -382,7 +401,7 @@ def save_calibration_plot(
     ax.set_ylim([0.0, 1.0])
     ax.set_xlabel("Mean predicted probability of default")
     ax.set_ylabel("Actual bad rate")
-    ax.set_title("Calibration Plot", fontsize=13, fontweight="bold", pad=15)
+    ax.set_title("Calibration Plot - Test Set", fontsize=13, fontweight="bold", pad=15)
     ax.grid(True, linestyle=":", alpha=0.6)
     ax.legend(loc="upper left", fontsize=10)
     ax.spines["top"].set_visible(False)
@@ -390,6 +409,8 @@ def save_calibration_plot(
 
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
+
+    return calib_table
 
 
 def save_candidate_evaluation_charts(
@@ -593,52 +614,148 @@ def calculate_optimal_cutoff(y_true: Any, y_prob: Any) -> Dict[str, float]:
     }
 
 
-def generate_approval_table(
-    y_true: np.ndarray, y_prob: np.ndarray, scores: pd.Series
+def build_cutoff_table(
+    y_true: Any, credit_score: Any, thresholds: Any = None, optimal_score: float = None
 ) -> pd.DataFrame:
     """
-    Sweeps through score deciles to simulate business approval strategies.
-    Computes Approval Rate, Approved Bad Rate, Bad Capture, and Good Rejection.
+    Generates a comprehensive approval policy evaluation table across multiple score cut-offs.
+    If optimal_score is provided, it guarantees this specific score is evaluated.
+
+    Convention:
+        Score >= cut-off: Approve
+        Score < cut-off: Reject
     """
-    df = pd.DataFrame(
-        {"Actual": np.asarray(y_true, dtype=int), "Score": scores.to_numpy()}
-    )
+    y_true = np.asarray(y_true, dtype=int)
+    credit_score = np.asarray(credit_score, dtype=float)
 
-    # Define cut-offs using dynamic percentiles to mimic real-world business sweeping
-    cut_offs = np.percentile(df["Score"], [10, 30, 50, 70, 90])
-    cut_offs = sorted(list(set(cut_offs)), reverse=True)
+    if len(y_true) != len(credit_score):
+        raise ValueError("y_true and credit_score must have the same length.")
 
-    results = []
-    total_customers = len(df)
-    total_bad = df["Actual"].sum()
-    total_good = total_customers - total_bad
+    if thresholds is None:
+        thresholds = np.arange(
+            np.floor(credit_score.min()),
+            np.ceil(credit_score.max()) + 1,
+            1,
+        ).astype(float)
 
-    for cutoff in cut_offs:
-        approved_mask = df["Score"] >= cutoff
-        rejected_mask = ~approved_mask
+    # Append the optimal_score to the thresholds array to ensure its calculation
+    if optimal_score is not None:
+        thresholds = np.append(thresholds, optimal_score)
+        thresholds = np.unique(thresholds)
+        thresholds = np.sort(thresholds)[::-1]  # Sort in descending order
 
-        approved_customers = approved_mask.sum()
-        approved_bad = df.loc[approved_mask, "Actual"].sum()
-        rejected_bad = df.loc[rejected_mask, "Actual"].sum()
-        rejected_good = (~df.loc[rejected_mask, "Actual"].astype(bool)).sum()
+    total_bad = np.sum(y_true == 1)
+    total_good = np.sum(y_true == 0)
 
-        results.append(
+    rows = []
+
+    for cutoff in thresholds:
+        approved = credit_score >= cutoff
+        rejected = ~approved
+
+        approved_count = int(approved.sum())
+        rejected_count = int(rejected.sum())
+
+        approved_bad_count = int(y_true[approved].sum())
+        rejected_bad_count = int(y_true[rejected].sum())
+        rejected_good_count = int(np.sum(y_true[rejected] == 0))
+
+        approval_rate = approved_count / len(y_true) if len(y_true) > 0 else 0
+
+        approved_bad_rate = (
+            approved_bad_count / approved_count if approved_count > 0 else np.nan
+        )
+        rejected_bad_rate = (
+            rejected_bad_count / rejected_count if rejected_count > 0 else np.nan
+        )
+        bad_capture_rate = rejected_bad_count / total_bad if total_bad > 0 else np.nan
+        good_rejection_rate = (
+            rejected_good_count / total_good if total_good > 0 else np.nan
+        )
+
+        rows.append(
             {
-                "Score_Cutoff": cutoff,
-                "Approval_Rate": (
-                    approved_customers / total_customers if total_customers > 0 else 0
-                ),
-                "Approved_Bad_Rate": (
-                    approved_bad / approved_customers if approved_customers > 0 else 0
-                ),
-                "Bad_Capture_Rate": rejected_bad / total_bad if total_bad > 0 else 0,
-                "Good_Rejection_Rate": (
-                    rejected_good / total_good if total_good > 0 else 0
-                ),
+                "Score cut-off": float(cutoff),
+                "Approval count": approved_count,
+                "Approval rate": approval_rate,
+                "Approved bad count": approved_bad_count,
+                "Approved bad rate": approved_bad_rate,
+                "Rejected count": rejected_count,
+                "Rejected bad rate": rejected_bad_rate,
+                "Bad capture rate": bad_capture_rate,
+                "Good rejection rate": good_rejection_rate,
             }
         )
 
-    return pd.DataFrame(results)
+    return (
+        pd.DataFrame(rows)
+        .sort_values("Score cut-off", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def display_cutoff_table(
+    cutoff_table: pd.DataFrame, optimal_score: float = None
+) -> None:
+    """
+    Prints a formatted subset of the cutoff table to the console (Notebook Sync Verification).
+    Always includes the Optimal Score (if provided) and filters rows around target approval rates.
+    """
+    print("\n" + "=" * 120)
+    print("📋 BUSINESS STRATEGY: CUT-OFF TABLE SIMULATION (NOTEBOOK SYNC VERIFICATION)")
+    print("=" * 120)
+
+    target_rates = [0.4, 0.5, 0.6, 0.7, 0.8]
+    display_rows = []
+
+    # 1. Prioritize and fetch the Optimal Score row first
+    idx_opt = -1
+    if optimal_score is not None:
+        idx_opt = (cutoff_table["Score cut-off"] - optimal_score).abs().idxmin()
+        display_rows.append(cutoff_table.loc[idx_opt])
+
+    # 2. Extract evenly distributed business target approval rates
+    for rate in target_rates:
+        idx = (cutoff_table["Approval rate"] - rate).abs().idxmin()
+
+        # Skip this row to prevent duplicates if it heavily overlaps with the Optimal Score
+        if idx == idx_opt:
+            continue
+
+        display_rows.append(cutoff_table.loc[idx])
+
+    display_df = pd.DataFrame(display_rows).reset_index(drop=True)
+    formatted_df = display_df.copy()
+
+    # Safely convert 'Score cut-off' to a list of formatted strings to bypass pandas LossySetitemError
+    formatted_scores = []
+    for i, val in enumerate(display_df["Score cut-off"]):
+        if optimal_score is not None and i == 0:
+            formatted_scores.append(f"{val:.1f} (Optimal)")
+        else:
+            formatted_scores.append(f"{val:.0f}")
+
+    formatted_df["Score cut-off"] = formatted_scores
+
+    # Safely format string percentages
+    formatted_df["Approval rate"] = formatted_df["Approval rate"].apply(
+        lambda x: f"{x:.2%}"
+    )
+    formatted_df["Approved bad rate"] = formatted_df["Approved bad rate"].apply(
+        lambda x: "nan%" if pd.isna(x) else f"{x:.2%}"
+    )
+    formatted_df["Rejected bad rate"] = formatted_df["Rejected bad rate"].apply(
+        lambda x: "nan%" if pd.isna(x) else f"{x:.2%}"
+    )
+    formatted_df["Bad capture rate"] = formatted_df["Bad capture rate"].apply(
+        lambda x: "nan%" if pd.isna(x) else f"{x:.2%}"
+    )
+    formatted_df["Good rejection rate"] = formatted_df["Good rejection rate"].apply(
+        lambda x: "nan%" if pd.isna(x) else f"{x:.2%}"
+    )
+
+    print(formatted_df.to_string(index=False))
+    print("=" * 120 + "\n")
 
 
 def save_business_strategy_plots(
@@ -652,11 +769,19 @@ def save_business_strategy_plots(
     """
     folder_path.mkdir(parents=True, exist_ok=True)
 
+    # Subsample data points to prevent cluttered plotting
+    target_rates = [0.1, 0.3, 0.5, 0.7, 0.9]
+    plot_points = []
+    for rate in target_rates:
+        idx = (approval_table["Approval rate"] - rate).abs().idxmin()
+        plot_points.append(approval_table.loc[idx])
+    plot_df = pd.DataFrame(plot_points)
+
     # Plot 1: Approval Rate
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.plot(
-        approval_table["Score_Cutoff"],
-        approval_table["Approval_Rate"],
+        plot_df["Score cut-off"],
+        plot_df["Approval rate"],
         marker="o",
         markersize=8,
         lw=2,
@@ -665,10 +790,10 @@ def save_business_strategy_plots(
     ax.set_xlabel("Score cut-off")
     ax.set_ylabel("Approval rate")
     ax.grid(True, linestyle=":", alpha=0.6)
-    for _, row in approval_table.iterrows():
+    for _, row in plot_df.iterrows():
         ax.annotate(
-            f"{row['Approval_Rate']:.1%}",
-            (row["Score_Cutoff"], row["Approval_Rate"]),
+            f"{row['Approval rate']:.1%}",
+            (row["Score cut-off"], row["Approval rate"]),
             textcoords="offset points",
             xytext=(0, 10),
             ha="center",
@@ -682,8 +807,8 @@ def save_business_strategy_plots(
     # Plot 2: Approved Bad Rate
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.plot(
-        approval_table["Score_Cutoff"],
-        approval_table["Approved_Bad_Rate"],
+        plot_df["Score cut-off"],
+        plot_df["Approved bad rate"],
         marker="o",
         markersize=8,
         lw=2,
@@ -692,10 +817,10 @@ def save_business_strategy_plots(
     ax.set_xlabel("Score cut-off")
     ax.set_ylabel("Bad rate of approved customers")
     ax.grid(True, linestyle=":", alpha=0.6)
-    for _, row in approval_table.iterrows():
+    for _, row in plot_df.iterrows():
         ax.annotate(
-            f"{row['Approved_Bad_Rate']:.1%}",
-            (row["Score_Cutoff"], row["Approved_Bad_Rate"]),
+            f"{row['Approved bad rate']:.1%}",
+            (row["Score cut-off"], row["Approved bad rate"]),
             textcoords="offset points",
             xytext=(0, 10),
             ha="center",
@@ -709,8 +834,8 @@ def save_business_strategy_plots(
     # Plot 3: Trade-off
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.plot(
-        approval_table["Approval_Rate"],
-        approval_table["Approved_Bad_Rate"],
+        plot_df["Approval rate"],
+        plot_df["Approved bad rate"],
         marker="o",
         markersize=8,
         lw=2,
@@ -721,10 +846,10 @@ def save_business_strategy_plots(
     ax.set_xlabel("Approval rate")
     ax.set_ylabel("Approved bad rate")
     ax.grid(True, linestyle=":", alpha=0.6)
-    for _, row in approval_table.iterrows():
+    for _, row in plot_df.iterrows():
         ax.annotate(
-            f"Score $\\geq$ {int(row['Score_Cutoff'])}",
-            (row["Approval_Rate"], row["Approved_Bad_Rate"]),
+            f"Score $\\geq$ {int(row['Score cut-off'])}",
+            (row["Approval rate"], row["Approved bad rate"]),
             textcoords="offset points",
             xytext=(10, 5),
             ha="left",
@@ -752,22 +877,280 @@ def audit_scorecard_results(
     print("📈 SCORE BAND MONOTONICITY AUDIT (TEST DATASET)")
     print("======================================================================")
 
-    df = pd.DataFrame({"credit_score": test_scores, "target": y_test_true.to_numpy()})
-    df["score_band"] = pd.qcut(df["credit_score"], q=10, duplicates="drop")
+    df = pd.DataFrame(
+        {
+            "credit_score": test_scores,
+            "predicted_pd": y_test_prob,
+            "target": y_test_true.to_numpy(),
+        }
+    )
+
+    # Bin based on Predicted PD to match Notebook Calibration Table Logic
+    df["pd_band"] = pd.qcut(df["predicted_pd"], q=10, duplicates="drop")
+
     score_band_audit = (
-        df.groupby("score_band", observed=True)
+        df.groupby("pd_band", observed=True)
         .agg(
             Number_of_observations=("target", "size"),
-            Mean_Credit_Score=("credit_score", "mean"),
+            Mean_Predicted_PD=("predicted_pd", "mean"),
             Actual_Bad_Rate=("target", "mean"),
+            Mean_Credit_Score=("credit_score", "mean"),
         )
         .reset_index()
     )
 
-    print(f"  Score Band           | Count | Mean Score | Actual Bad Rate")
+    print(f"  PD Band              | Count | Mean Score | Actual Bad Rate")
     print(f"  ---------------------|-------|------------|----------------")
     for _, row in score_band_audit.iterrows():
         print(
-            f"  {str(row['score_band']):<20} | {row['Number_of_observations']:>5.0f} | {row['Mean_Credit_Score']:>10.1f} | {row['Actual_Bad_Rate']:>14.2%}"
+            f"  {str(row['pd_band']):<20} | {row['Number_of_observations']:>5.0f} | {row['Mean_Credit_Score']:>10.1f} | {row['Actual_Bad_Rate']:>14.2%}"
         )
     print("======================================================================\n")
+
+
+# ==============================================================================
+# 8. Scorecard Table Generation (Notebook Sync)
+# ==============================================================================
+def display_scorecard_table(
+    woe_dicts: Dict[str, Dict[str, float]],
+    model_coefficients: Dict[str, float],
+    intercept: float,
+    factor: float,
+    offset: float,
+) -> pd.DataFrame:
+    """
+    Generates and prints the detailed scorecard table containing WOE, Coefficients,
+    Raw Points, and Rounded Points for each bin, aligning with Notebook outputs.
+
+    Args:
+        woe_dicts: Dictionary containing mapping of bins to WOE values.
+        model_coefficients: Dictionary containing logistic regression coefficients.
+        intercept: The intercept of the fitted model.
+        factor: Scorecard scaling factor (PDO / ln(2)).
+        offset: Scorecard scaling offset.
+
+    Returns:
+        pd.DataFrame: Formatted scorecard dataframe.
+    """
+    base_points = offset - (factor * intercept)
+
+    print("\n" + "=" * 80)
+    print("📋 DETAILED SCORECARD TABLE BY BIN (NOTEBOOK SYNC VERIFICATION)")
+    print("=" * 80)
+    print(f"Base Points: {base_points:.4f} (Rounded: {int(round(base_points))})\n")
+
+    rows = []
+    for feature, bin_mapping in woe_dicts.items():
+        if feature not in model_coefficients:
+            continue
+        coef = model_coefficients[feature]
+        for bin_label, woe_val in bin_mapping.items():
+            raw_points = -factor * coef * woe_val
+            rounded_points = int(round(raw_points))
+            rows.append(
+                {
+                    "Variable": feature,
+                    "Bin": bin_label,
+                    "WOE": woe_val,
+                    "Coefficient": coef,
+                    "Raw points": raw_points,
+                    "Rounded points": rounded_points,
+                }
+            )
+
+    scorecard_df = pd.DataFrame(rows)
+
+    # Format and print the table to console
+    formatted_df = scorecard_df.copy()
+    formatted_df["WOE"] = formatted_df["WOE"].apply(lambda x: f"{x:.6f}")
+    formatted_df["Coefficient"] = formatted_df["Coefficient"].apply(
+        lambda x: f"{x:.6f}"
+    )
+    formatted_df["Raw points"] = formatted_df["Raw points"].apply(lambda x: f"{x:.4f}")
+
+    print(formatted_df.to_string(index=False))
+    print("=" * 80 + "\n")
+
+    return scorecard_df
+
+
+# ==============================================================================
+# 9. Deployment & Cloud Sync Integration
+# ==============================================================================
+def package_and_upload_artifacts(run_dir: pathlib.Path, config: Dict[str, Any]) -> None:
+    """
+    Packages production model binaries into model.zip and syncs with Hugging Face Hub.
+
+    Args:
+        run_dir (pathlib.Path): The directory containing the current run's artifacts.
+        config (Dict[str, Any]): Configuration dictionary containing deployment settings.
+    """
+    models_dir = run_dir / "models"
+    zip_path = run_dir / "model.zip"
+
+    print("\n" + "=" * 70)
+    print("📦 [MLOPS CLOUD] PACKAGING MODEL ARTIFACTS FOR DEPLOYMENT")
+    print("=" * 70)
+
+    # 1. Zip model binaries
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in models_dir.glob("*"):
+            if file_path.is_file():
+                zipf.write(file_path, arcname=file_path.name)
+    print(f"  -> Successfully zipped production binaries to: {zip_path.name}")
+
+    # 2. Upload to Hugging Face Hub if token available
+    hf_token = os.getenv("HF_TOKEN")
+    repo_id = "trungcan94/AIO_moddule_2_model"
+
+    if hf_token:
+        try:
+            print(f"  -> Uploading 'model.zip' to Hugging Face Dataset: {repo_id}...")
+            api = HfApi()
+            api.upload_file(
+                path_or_fileobj=str(zip_path),
+                path_in_repo="model.zip",
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=hf_token,
+            )
+            print("  ✅ [SUCCESS] Production model published to Hugging Face Cloud!")
+        except Exception as e:
+            print(f"  ⚠️ [UPLOAD WARNING] Cloud sync failed: {e}")
+    else:
+        print("  ℹ️ [LOCAL SYNC] HF_TOKEN environment variable not detected.")
+        print(
+            "     Local 'model.zip' created. Streamlit inference engine will read locally."
+        )
+
+
+# ==============================================================================
+# 10. Notebook-Sync Audit Logs & Mathematical Precision Checks
+# ==============================================================================
+def display_coefficient_stability(
+    candidate_results: Dict[str, Any], champion_key: str
+) -> None:
+    """
+    Displays the cross-validation coefficient stability table for the champion model
+    and warns if any feature has a negative coefficient rate below 80%,
+    syncing behavior with notebook logic.
+
+    Args:
+        candidate_results (Dict[str, Any]): Dictionary containing CV results for all models.
+        champion_key (str): The key of the selected champion model.
+    """
+    final_cv_stability = candidate_results[champion_key]["coefficient_stability"]
+
+    print("\n" + "=" * 70)
+    print(f"📊 COEFFICIENT STABILITY AUDIT (NOTEBOOK SYNC VERIFICATION)")
+    print("=" * 70)
+
+    formatted_stability = final_cv_stability.copy()
+    formatted_stability["Mean_coefficient"] = formatted_stability[
+        "Mean_coefficient"
+    ].apply(lambda x: f"{x:.6f}")
+    formatted_stability["SD_coefficient"] = formatted_stability["SD_coefficient"].apply(
+        lambda x: f"{x:.6f}"
+    )
+    formatted_stability["Negative_fold_rate"] = formatted_stability[
+        "Negative_fold_rate"
+    ].apply(lambda x: f"{x:.1%}")
+
+    print(formatted_stability.to_string(index=False))
+
+    sign_warning = final_cv_stability.loc[
+        final_cv_stability["Negative_fold_rate"] < 0.80
+    ]
+    if sign_warning.empty:
+        print("\n  -> [PASS] No variables with negative coefficient rate below 80%.")
+    else:
+        print("\n  -> ⚠️ [WARNING] Variables requiring coefficient sign review:")
+        print(sign_warning.to_string(index=False))
+    print("=" * 70 + "\n")
+
+
+def display_champion_model_summary(champion_model: Any) -> None:
+    """
+    Prints the GLM statistical summary and detailed coefficient metrics
+    (Standard Error, Z-statistic, P-value, Confidence Intervals, Odds Ratio)
+    for the champion model to the console.
+
+    Args:
+        champion_model (Any): The fitted CreditModelTrainer object.
+    """
+    print("\n" + "=" * 80)
+    print("📊 CHAMPION MODEL LOGISTIC REGRESSION SUMMARY (NOTEBOOK SYNC VERIFICATION)")
+    print("=" * 80)
+
+    # Print default statsmodels summary if available
+    if hasattr(champion_model, "model_") and hasattr(champion_model.model_, "summary"):
+        print(champion_model.model_.summary())
+
+    print("\n  -- DETAILED COEFFICIENT STATISTICS & ODDS RATIOS --")
+
+    # Print detailed metrics extracted from model audit
+    coef_stats = pd.DataFrame(
+        champion_model.audit_report_.get("coefficient_statistics", [])
+    )
+    if not coef_stats.empty:
+        formatted_coefs = coef_stats.copy()
+        for col in [
+            "Coefficient",
+            "Standard error",
+            "P-value",
+            "CI lower",
+            "CI upper",
+            "Odds ratio",
+        ]:
+            if col in formatted_coefs.columns:
+                formatted_coefs[col] = formatted_coefs[col].apply(lambda x: f"{x:.6f}")
+        if "Z statistic" in formatted_coefs.columns:
+            formatted_coefs["Z statistic"] = formatted_coefs["Z statistic"].apply(
+                lambda x: f"{x:.4f}"
+            )
+
+        print(formatted_coefs.to_string(index=False))
+    print("=" * 80 + "\n")
+
+
+def verify_score_precision(
+    X_test_constant: pd.DataFrame,
+    model_params: pd.Series,
+    test_probability: np.ndarray,
+    offset: float,
+    factor: float,
+) -> None:
+    """
+    Calculates the maximum difference between credit scores derived directly
+    from logits versus scores derived from probabilities to ensure mathematical precision.
+
+    Args:
+        X_test_constant (pd.DataFrame): Test features with constant added.
+        model_params (pd.Series): The parameters (coefficients) of the fitted model.
+        test_probability (np.ndarray): The predicted probabilities.
+        offset (float): The scorecard offset value.
+        factor (float): The scorecard scaling factor.
+    """
+    test_linear_predictor = np.asarray(X_test_constant @ model_params, dtype=float)
+    test_score_from_logit = offset - factor * test_linear_predictor
+
+    # Calculate score from probability
+    eps = 1e-8
+    clipped_prob = np.clip(np.asarray(test_probability, dtype=float), eps, 1 - eps)
+    logit_pd = np.log(clipped_prob / (1 - clipped_prob))
+    test_score_from_probability = offset - factor * logit_pd
+
+    max_diff = float(
+        np.max(np.abs(test_score_from_logit - test_score_from_probability))
+    )
+
+    print("\n" + "-" * 70)
+    print(f"🔢 SCORE CALCULATION PRECISION CHECK (NOTEBOOK SYNC VERIFICATION)")
+    print(
+        f"  -> Maximum difference between logit score and probability score: {max_diff}"
+    )
+    if max_diff > 1e-8:
+        warnings.warn("Score calculation methods do not match (error > 1e-8).")
+    else:
+        print("  -> [PASS] Mathematical precision verified.")
+    print("-" * 70 + "\n")

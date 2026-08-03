@@ -4,7 +4,7 @@ Data Loader and Splitting Module
 Purpose:
     This module is dedicated to the data acquisition and splitting phase.
     It loads the local raw dataset and splits it strictly into Train and Test sets.
-    Supports dual-mode preprocessing interception to match legacy notebook drops.
+    Supports dual-mode preprocessing interception to ensure Notebook Sync Verification.
 """
 
 import pandas as pd
@@ -41,7 +41,8 @@ def load_raw_training_data(
         # ======================================================================
         # BRANCH 1: NOTEBOOK MATCH (PRE-SPLIT INTERCEPTION)
         # ======================================================================
-        # Trong Notebook cũ, dữ liệu được xóa thủ công TRƯỚC KHI chia Train/Test
+        # In the legacy notebook, specific anomalies were manually dropped BEFORE
+        # the Train/Test split. This block ensures Notebook Sync Verification.
         if mode == "notebook_match":
             print(
                 "  -> [LOADER MODE: NOTEBOOK MATCH] Intercepting data to hard-drop legacy anomalies before split..."
@@ -122,19 +123,24 @@ def split_train_test(
         stratify=df[target_column] if should_stratify else None,
     )
 
-    print("\n[LOADER] Stratified Train/Test Splitting Executed:")
+    print(
+        "\n[LOADER] Stratified Train/Test Splitting Executed (Notebook Sync Verification):"
+    )
 
     for name, dataset in (
         ("Train", df_train),
         ("Test", df_test),
     ):
         counts = dataset[target_column].value_counts().to_dict()
-        ratios = dataset[target_column].value_counts(normalize=True).round(4).to_dict()
+
+        # Calculate percentage distribution
+        ratios = dataset[target_column].value_counts(normalize=True).to_dict()
+        ratios_pct = {k: f"{v * 100:.2f}%" for k, v in ratios.items()}
 
         print(
             f"    - {name:<6}: {dataset.shape[0]:>6} rows | "
             f"Class count: {counts} | "
-            f"Distribution: {ratios}"
+            f"Distribution: {ratios_pct}"
         )
 
     return df_train, df_test

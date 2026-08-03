@@ -10,17 +10,17 @@ artifact packages, and cloud sync.
 from dotenv import load_dotenv
 
 load_dotenv()  # Auto-loads environment variables from .env file
+
 import os
 import time
 import yaml
 import joblib
 import json
-import zipfile
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from pathlib import Path
 from typing import Dict, List, Any
-from huggingface_hub import HfApi
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import brier_score_loss, log_loss
 
@@ -51,52 +51,15 @@ from src.utils import (
     calculate_calibration_error,
     audit_scorecard_results,
     calculate_optimal_cutoff,
-    generate_approval_table,
+    build_cutoff_table,
+    display_cutoff_table,
     save_business_strategy_plots,
+    package_and_upload_artifacts,
+    display_coefficient_stability,
+    display_champion_model_summary,
+    verify_score_precision,
+    display_scorecard_table,
 )
-
-
-def package_and_upload_artifacts(run_dir: Path, config: Dict[str, Any]) -> None:
-    """
-    Packages production model binaries into model.zip and syncs with Hugging Face Hub.
-    """
-    models_dir = run_dir / "models"
-    zip_path = run_dir / "model.zip"
-
-    print("\n" + "=" * 70)
-    print("📦 [MLOPS CLOUD] PACKAGING MODEL ARTIFACTS FOR DEPLOYMENT")
-    print("=" * 70)
-
-    # 1. Zip model binaries
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in models_dir.glob("*"):
-            if file_path.is_file():
-                zipf.write(file_path, arcname=file_path.name)
-    print(f"  -> Successfully zipped production binaries to: {zip_path.name}")
-
-    # 2. Upload to Hugging Face Hub if token available
-    hf_token = os.getenv("HF_TOKEN")
-    repo_id = "trungcan94/AIO_moddule_2_model"
-
-    if hf_token:
-        try:
-            print(f"  -> Uploading 'model.zip' to Hugging Face Dataset: {repo_id}...")
-            api = HfApi()
-            api.upload_file(
-                path_or_fileobj=str(zip_path),
-                path_in_repo="model.zip",
-                repo_id=repo_id,
-                repo_type="dataset",
-                token=hf_token,
-            )
-            print("  ✅ [SUCCESS] Production model published to Hugging Face Cloud!")
-        except Exception as e:
-            print(f"  ⚠️ [UPLOAD WARNING] Cloud sync failed: {e}")
-    else:
-        print("  ℹ️ [LOCAL SYNC] HF_TOKEN environment variable not detected.")
-        print(
-            "     Local 'model.zip' created. Streamlit inference engine will read locally."
-        )
 
 
 def main() -> None:
@@ -140,7 +103,7 @@ def main() -> None:
     )
     data_path: Path = RAW_DATA_FILE
 
-    # Passing the mode allows the data loader to drop legacy anomalies BEFORE splitting if in notebook_match mode
+    # Passing the mode allows the data loader to drop legacy anomalies BEFORE splitting
     df_raw: pd.DataFrame = load_raw_training_data(file_path=data_path, mode=PREP_MODE)
 
     # --------------------------------------------------------------------------
@@ -165,7 +128,7 @@ def main() -> None:
 
     split_params: Dict[str, Any] = config["data"]["split_params"]
 
-    # Notebook 4 strategy: Strictly Train and Test (No Validation Set)
+    # Strictly Train and Test (No Validation Set)
     df_train, df_test = split_train_test(
         df=df_raw, target_column=TARGET_COL, split_params=split_params
     )
@@ -186,7 +149,6 @@ def main() -> None:
         start_time,
     )
 
-    # Passing PREP_MODE coordinates the cleaner to apply either legacy drop logic or Z-Score capping
     cleaner: CreditDataCleaner = CreditDataCleaner(
         numerical_features=NUM_COLS,
         categorical_features=CAT_COLS,
@@ -311,9 +273,15 @@ def main() -> None:
         champ_cfg=champ_cfg,
     )
 
+    # --- NOTEBOOK SYNC VERIFICATION: Check Coefficient Stability for Champion ---
+    display_coefficient_stability(metrics_log, champion_key)
+
     # Fit the Champion Model formally on the ENTIRE training subset to extract final coefficients
     champion_model = CreditModelTrainer(model_config=config["model"])
     champion_model.fit(X_train_sel_dict[champion_key], y_train)
+
+    # --- NOTEBOOK SYNC VERIFICATION: Display Model Summary & Odds Ratios ---
+    display_champion_model_summary(champion_model)
 
     # --------------------------------------------------------------------------
     # STEP 8: MLOPS ARTIFACT STORAGE PACKAGING & MULTI-POPULATION EXPORT
@@ -335,9 +303,34 @@ def main() -> None:
     )
 
     # --- FINANCIAL SCORE SCALE CONVERSION ---
-    print(f"[MLOPS] Activating Scorecard Scaling for Champion ({champion_key})...")
-    score_scaler = CreditScorecardScaler(scaling_config=config["scorecard_scaling"])
+    print(f"\n[MLOPS] Activating Scorecard Scaling for Champion ({champion_key})...")
+    scaling_cfg = config["scorecard_scaling"]
+    print(
+        f"  -> Base Score: {scaling_cfg['base_score']} at Odds {scaling_cfg['base_odds']}:1"
+    )
+    print(f"  -> PDO: {scaling_cfg['pdo']}")
+
+    score_scaler = CreditScorecardScaler(scaling_config=scaling_cfg)
     score_scaler.fit(model_trainer=champion_model, woe_transformer=woe_transformer)
+
+    print(f"  -> Calculated Factor: {score_scaler.factor:.6f}")
+    print(f"  -> Calculated Offset: {score_scaler.offset:.6f}")
+
+    # --- NOTEBOOK SYNC VERIFICATION: Display Scorecard Bin Table ---
+    # Safely extract coefficients from the audit report
+    coef_stats = champion_model.audit_report_.get("coefficient_statistics", [])
+    model_coefficients = {stat["Variable"]: stat["Coefficient"] for stat in coef_stats}
+
+    # Safely extract intercept (Statsmodels typically uses 'const')
+    intercept_value = float(model_coefficients.get("const", 0.0))
+
+    display_scorecard_table(
+        woe_dicts=woe_transformer.woe_dictionaries,
+        model_coefficients=model_coefficients,
+        intercept=intercept_value,
+        factor=score_scaler.factor,
+        offset=score_scaler.offset,
+    )
 
     # Extract nominal bin strings for historical records matching the scaling logic
     X_train_bins = woe_transformer.transform_to_bins(X_train_clean)
@@ -353,6 +346,16 @@ def main() -> None:
     y_test_prob_champ = champion_model.predict_probability(X_test_champ)
     y_oof_prob_champ = metrics_log[champion_key]["oof_probability"]
 
+    # --- NOTEBOOK SYNC VERIFICATION: Score Precision Audit ---
+    X_test_champ_const = sm.add_constant(X_test_champ, has_constant="add")
+    verify_score_precision(
+        X_test_constant=X_test_champ_const,
+        model_params=pd.Series(model_coefficients),
+        test_probability=y_test_prob_champ,
+        offset=score_scaler.offset,
+        factor=score_scaler.factor,
+    )
+
     # --- BUSINESS DECISION STRATEGY & OPTIMAL CUT-OFF (STEPS 17-20) ---
     print(
         "\n[MLOPS] Activating Business Decision Strategy & Optimal Cut-off Analysis..."
@@ -365,7 +368,6 @@ def main() -> None:
     optimal_pd = optimal_cutoff_metrics["optimal_pd_threshold"]
 
     # 2. Convert Optimal PD to Optimal Credit Score Cut-off
-    scaling_cfg = config["scorecard_scaling"]
     factor = scaling_cfg["pdo"] / np.log(2)
     offset = scaling_cfg["base_score"] - factor * np.log(scaling_cfg["base_odds"])
     optimal_score = offset - factor * np.log(optimal_pd / (1.0 - optimal_pd))
@@ -374,14 +376,24 @@ def main() -> None:
     print(f"  -> Optimal Score Cut-off: {optimal_score:.1f}")
 
     # 3. Generate Approval Strategy Table & Plots on Test Data
-    approval_table = generate_approval_table(
-        y_true=y_test, y_prob=y_test_prob_champ, scores=test_scores
+    print("  -> Generating Detailed Cut-off Strategy Table...")
+
+    cutoff_table = build_cutoff_table(
+        y_true=y_test,
+        credit_score=test_scores,
+        optimal_score=optimal_score,
     )
+
+    # --- NOTEBOOK SYNC VERIFICATION: Display Cut-off Table ---
+    display_cutoff_table(cutoff_table=cutoff_table, optimal_score=optimal_score)
+
     save_business_strategy_plots(
-        approval_table=approval_table, folder_path=current_run_dir / "plots"
+        approval_table=cutoff_table, folder_path=current_run_dir / "plots"
     )
-    approval_table.to_csv(
-        current_run_dir / "tables" / "cumulative_approval_strategy.csv", index=False
+
+    # Save the FULL table to CSV for business analysts
+    cutoff_table.to_csv(
+        current_run_dir / "tables" / "detailed_cutoff_strategy.csv", index=False
     )
 
     # --- FINANCIAL CALIBRATION AUDIT ---
@@ -400,7 +412,7 @@ def main() -> None:
         json.dump(calibration_metrics, f, indent=4)
 
     # --- PHYSICAL DATASETS EXPORTATION & AUDIT (STEPS 17 & 18) ---
-    print("[MLOPS] Saving processed row-level datasets and computing odds...")
+    print("\n[MLOPS] Saving processed row-level datasets and computing odds...")
 
     # Calculate Good:Bad Odds: Odds = (1 - PD) / PD
     train_odds = (1.0 - y_train_prob_champ) / np.clip(y_train_prob_champ, 1e-10, 1.0)
@@ -556,6 +568,7 @@ def main() -> None:
         file_path=current_run_dir / "plots" / "test_confusion_matrix_heatmap.png",
     )
 
+    # --- NOTEBOOK SYNC VERIFICATION: Call Calibration Plot which also prints the table ---
     save_calibration_plot(
         y_true=y_test,
         y_prob=y_test_prob_champ,
