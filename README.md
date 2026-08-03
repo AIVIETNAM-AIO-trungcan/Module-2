@@ -118,22 +118,76 @@ flowchart TD
 
 The selected Champion Model (`Intermediate Pre-decision Full Financial`) exhibits excellent discrimination capability without signs of overfitting across all populations:
 
-| Metric Category             | Performance Indicator                                                                   | Benchmark / Target                  | Audit Status  |
-| :-------------------------- | :-------------------------------------------------------------------------------------- | :---------------------------------- | :-----------: |
-| **Model Discrimination**    | **KS Index:** `0.5011` (Test Set)<br>**Gini Coefficient:** `0.6639`                     | KS > 0.40<br>Gini > 0.60            | 🟢 Excellent  |
-| **Classification Accuracy** | **Overall Accuracy:** `79.12%`                                                          | Accuracy > 75%                      |  🟢 Optimal   |
-| **Score Calibration**       | **Mean Absolute Error (MAE):** `0.6160` pts<br>**Calibration Variance Ratio:** `1.0102` | MAE < 1.0 pt<br>Ratio $\approx 1.0$ | 🟢 Calibrated |
-| **Regulatory Trend Audit**  | **Economic Logic:** $100\%$ negative coefficients ($\beta < 0$)                         | Monotonic Trend                     | 🟢 Compliant  |
+| Metric Category              | Performance Indicator                                                                        | Benchmark / Target                     | Audit Status  |
+| :--------------------------- | :------------------------------------------------------------------------------------------- | :------------------------------------- | :-----------: |
+| **Model Discrimination**     | **ROC-AUC:** `0.8320`<br>**KS Index:** `0.5011` (Test Set)<br>**Gini Coefficient:** `0.6639` | AUC > 0.75<br>KS > 0.40<br>Gini > 0.60 | 🟢 Excellent  |
+| **Probabilistic Accuracy**   | **Brier Score:** `0.1129`<br>**Log Loss:** `0.3709`                                          | Brier < 0.20<br>Log Loss < 0.50        |  🟢 Optimal   |
+| **Classification (Default)** | **F1-Score:** `0.5836`<br>**Recall (Sensitivity):** `0.6791`<br>**Precision:** `0.5116`      | F1 > 0.50<br>Recall > 0.60             |  🟢 Optimal   |
+| **Score Calibration**        | **Mean Absolute Error (MAE):** `0.6160` pts<br>**Calibration Variance Ratio:** `1.0102`      | MAE < 1.0 pt<br>Ratio $\approx 1.0$    | 🟢 Calibrated |
+| **Regulatory Trend Audit**   | **Economic Logic:** $100\%$ negative coefficients ($\beta < 0$)                              | Monotonic Trend                        | 🟢 Compliant  |
 
 > > 📄 **Full Technical Documentation:** [Download Full Technical Audit Report (.PDF)](https://drive.google.com/file/d/1hcO1-CbHj6eSLq2Ao-x_QFpZB9LTFz5z/view?usp=sharing)
 
 ---
 
+### 🧮 5.1. Production Scorecard Rulebook
+
+The final output of the pipeline is a highly interpretable, regulatory-compliant scorecard.
+
+- **Scaling Setup:** Base Score = `600`, Base Odds = `50:1`, PDO = `20`.
+- **Intercept Points:** `525` pts.
+
+#### 📈 Feature-Level Point Allocations
+
+<details>
+<summary><b>🔍 View Detailed Scorecard Points Allocation Table (Click to expand)</b></summary>
+
+| Feature                       | Bin / Category    |   WOE   | Allocated Points |
+| :---------------------------- | :---------------- | :-----: | :--------------: |
+| **person_income**             | Bin_0             | -1.4456 |     **-32**      |
+|                               | Bin_1             | -0.8843 |     **-19**      |
+|                               | Bin_2             | -0.2662 |      **-6**      |
+|                               | Bin_3             | 0.0249  |      **1**       |
+|                               | Bin_4             | 0.4254  |      **9**       |
+|                               | Bin_5             | 0.9946  |      **22**      |
+| **loan_intent**               | VENTURE           | 0.4918  |      **17**      |
+|                               | EDUCATION         | 0.2978  |      **10**      |
+|                               | PERSONAL          | 0.1381  |      **5**       |
+|                               | HOMEIMPROVEMENT   | -0.2227 |      **-8**      |
+|                               | MEDICAL           | -0.2940 |     **-10**      |
+|                               | DEBTCONSOLIDATION | -0.3784 |     **-13**      |
+| **person_home_ownership**     | OWN               | 1.3600  |      **35**      |
+|                               | MORTGAGE          | 0.6457  |      **17**      |
+|                               | RENT              | -0.4934 |     **-13**      |
+|                               | OTHER             | -0.4934 |     **-13**      |
+| **cb_person_default_on_file** | N                 | 0.2166  |      **7**       |
+|                               | Y                 | -0.7783 |     **-26**      |
+| **person_emp_length**         | Bin_0             | -0.3469 |      **-4**      |
+|                               | Bin_1             | -0.2312 |      **-3**      |
+|                               | Bin_2             | 0.0702  |      **1**       |
+|                               | Bin_3             | 0.1777  |      **2**       |
+|                               | Bin_4             | 0.2479  |      **3**       |
+|                               | Bin_5             | 0.4272  |      **5**       |
+| **loan_amnt**                 | Bin_0             | 0.1131  |      **3**       |
+|                               | Bin_1             | 0.4205  |      **10**      |
+|                               | Bin_2             | 0.1425  |      **3**       |
+|                               | Bin_3             | -0.0091 |      **0**       |
+|                               | Bin_4             | -0.3177 |      **-7**      |
+|                               | Bin_5             | -0.6532 |     **-15**      |
+| **loan_percent_income**       | Bin_0             | 0.8387  |      **21**      |
+|                               | Bin_1             | 0.6078  |      **15**      |
+|                               | Bin_2             | 0.2139  |      **5**       |
+|                               | Bin_3             | -0.1895 |      **-5**      |
+|                               | Bin_4             | -2.0557 |     **-51**      |
+|                               | Bin_5             | -2.3066 |     **-57**      |
+
+_(Note: Missing and Special categorical bins dynamically default to 0 points to handle unexpected inputs safely)._
+
+</details>
+
 ## 🌐 6. Product Demo & Media Showcase
 
 ### 🎥 Streamlit Application Live Preview
-
-![Credit Risk Scoring App Demo](asset/demo_app.gif)
 
 ---
 
