@@ -38,6 +38,7 @@ tempCodeRunnerFile.py
 # Streamlit & Secrets (Crucial for Deployment Security)
 # ==============================================================================
 .streamlit/secrets.toml
+.env
 
 # ==============================================================================
 # Project Specific Data & Artifacts Overrides (Security & Size Protection)
@@ -48,6 +49,25 @@ data/**/*.csv
 # Block all serialized models and preprocessors (.pkl or .joblib)
 artifacts/**/*.pkl
 artifacts/**/*.joblib
+!demo_artifacts/
+!demo_artifacts/*.pkl
 
-# Block all generated evaluation metrics and reports
-artifacts/metrics/*
+# Block all generated evaluation metrics and reports across all dynamic MLOps runs
+artifacts/runs/**/metrics/
+
+# Block all generated WOE tables and mathematical CSV reports inside artifacts folder
+artifacts/**/*.csv
+
+# Block all generated deployment JSON manifests inside artifacts folder
+artifacts/**/*.json
+
+# Block all generated visual analysis plot images (.png, .jpg, etc.)
+artifacts/plots/
+artifacts/runs/**/plots/
+*.png
+*.jpg
+*.jpeg
+
+# Ignore model package zip files
+*.zip
+artifacts/**/*.zip
