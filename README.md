@@ -51,12 +51,16 @@ Module-2/
 │       ├── data/                    # Processed WOE datasets and score-transformed tables
 │       ├── metrics/                 # JSON reports of model performance (KS, Gini, MAE)
 │       ├── models/                  # Serialized binary model packages (.pkl files)
+│       │   ├── baseline_logistic_model.pkl  # Baseline Logistic Regression Model (Champion)
+│       │   ├── cleaner.pkl                  # Tier-1 Statistical Cleaner artifact
+│       │   ├── feature_selector.pkl         # Tier-3 Feature Selection artifact
+│       │   ├── score_scaler.pkl             # Financial Score Scaling parameters
+│       │   └── woe_transformer.pkl          # Tier-2 WOE Binning engine artifact
 │       ├── plots/                   # Generated evaluation charts (ROC, KS Curves, Monotonicity)
 │       └── tables/                  # Business Scorecard Lookup Tables & QA audit logs (.csv)
 ├── asset/                           # Project visual assets & mascot images
 ├── checklist/                       # Governance & project verification checklists
 ├── data/                            # Dataset directory (contains raw credit data)
-├── demo_artifacts/                  # Fixed sample artifacts for demo fallback
 ├── notebook/                        # Exploratory Data Analysis (EDA) & experimental notebooks
 ├── src/                             # Core Library Modules
 │   ├── __init__.py                  # Python package initializer
